@@ -52,10 +52,11 @@ jobs:
             PRS=$(echo "$COMMITS" | grep -o '#[0-9]\+' | tr -d '#' | sort -u)
 
             for pr in $PRS; do
-              gh pr view "$pr" --repo "$REPO" --json title,number,author --jq \
-                '"- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' || \
-                echo "- PR #$pr could not be found or fetched."
-            done >> RELEASE.md
+              (
+                gh pr view "$pr" --repo "$REPO" --json title,number,author --jq \
+                  '"- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' \
+                || echo "- PR #$pr could not be found or fetched."
+              ) >> RELEASE.md
           else
             gh pr list \
               --repo "$REPO" \
