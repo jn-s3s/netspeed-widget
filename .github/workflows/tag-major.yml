@@ -1,0 +1,39 @@
+name: 🔖 Create Major Release Tag
+
+on:
+  workflow_dispatch:
+
+jobs:
+  tag-major:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: release
+
+      - name: 🔍 Fetch latest tags
+        run: git fetch --tags
+
+      - name: 🧠 Calculate next major version
+        id: bump
+        run: |
+          latest_tag=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || echo "v0.0.0")
+          echo "Latest tag: $latest_tag"
+          major=$(echo $latest_tag | cut -d. -f1 | sed 's/v//')
+          new_major=$((major + 1))
+          new_tag="v${new_major}.0.0"
+          echo "new_tag=$new_tag" >> $GITHUB_OUTPUT
+
+      - name: 🏷️ Create and push new tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git tag ${{ steps.bump.outputs.new_tag }}
+          git push origin ${{ steps.bump.outputs.new_tag }}
+
+      - name: 🚀 Manually trigger Build Release workflow
+        run: gh workflow run build.yml --ref ${{ steps.bump.outputs.new_tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
