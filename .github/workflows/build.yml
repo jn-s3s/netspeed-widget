@@ -39,7 +39,6 @@ jobs:
           else
             git fetch --tags
           fi
-
           PREV_TAG=$(git tag --sort=-creatordate | grep -v "${{ github.ref_name }}" | head -n 1)
           NEW_TAG=${{ github.ref_name }}
           REPO=${{ github.repository }}
@@ -54,7 +53,8 @@ jobs:
 
             for pr in $PRS; do
               gh pr view "$pr" --repo "$REPO" --json title,number,author --jq \
-                '"- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"'
+                '"- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' || \
+                echo "- PR #$pr could not be found or fetched."
             done >> RELEASE.md
           else
             gh pr list \
@@ -84,7 +84,7 @@ jobs:
           if [ -n "$PREV_TAG" ]; then
             printf "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/compare/$PREV_TAG...$NEW_TAG\n" >> RELEASE.md
           else
-            printf "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/commits/$NEW_TAG\n" >> RELEASE.md
+            printf "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/releases/tag/$NEW_TAG\n" >> RELEASE.md
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
