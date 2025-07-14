@@ -1,4 +1,4 @@
-name: Every push to main, push to release for deployment
+name: 📅 Release for deployment
 
 on:
   workflow_dispatch:

@@ -34,6 +34,6 @@ jobs:
           git push origin ${{ steps.bump.outputs.new_tag }}
 
       - name: 🚀 Manually trigger Build Release workflow
-        run: gh workflow run build-release.yml --ref ${{ steps.bump.outputs.new_tag }}
+        run: gh workflow run build.yml --ref ${{ steps.bump.outputs.new_tag }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
