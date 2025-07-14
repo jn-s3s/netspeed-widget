@@ -1,0 +1,29 @@
+name: 📅 Release for deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  push-to-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔄 Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: 🛠️ Create and push to release branch
+        run: |
+          git checkout -b release
+          git push --force origin release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: ⬆️ Update develop branch
+        run: |
+          git checkout -b develop
+          git push --force origin develop
