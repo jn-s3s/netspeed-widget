@@ -1,4 +1,4 @@
-name: Build release executable file
+name: 📦 Build release executable file
 
 on:
   workflow_dispatch:
