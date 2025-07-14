@@ -1,0 +1,100 @@
+name: Build release executable file
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-from-tag-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: 🔄 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller psutil win32api
+
+      - name: 🛠️ Run PyInstaller Build Script
+        run: pyinstaller --noconsole --onefile app.py
+
+      - name: 📁 Check build output
+        run: dir dist
+
+      - name: 📋 Generate Changelog from PRs
+        id: generate_changelog
+        shell: bash
+        run: |
+          if git rev-parse --is-shallow-repository | grep true; then
+            git fetch --tags --unshallow
+          else
+            git fetch --tags
+          fi
+
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v "${{ github.ref_name }}" | head -n 1)
+          NEW_TAG=${{ github.ref_name }}
+          REPO=${{ github.repository }}
+
+          echo "Generating changelog from $PREV_TAG to $NEW_TAG..."
+
+          printf "## 🧾 What's Changed\n" > RELEASE.md
+
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%s" $PREV_TAG..$NEW_TAG)
+            PRS=$(echo "$COMMITS" | grep -o '#[0-9]\+' | tr -d '#' | sort -u)
+
+            for pr in $PRS; do
+              gh pr view "$pr" --repo "$REPO" --json title,number,author --jq \
+                '"- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"'
+            done >> RELEASE.md
+          else
+            gh pr list \
+              --repo "$REPO" \
+              --state merged \
+              --limit 20 \
+              --json title,number,author \
+              --jq '.[] | "- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' >> RELEASE.md
+          fi
+
+          printf "\n## 👥 New Contributors\n" >> RELEASE.md
+          if [ -n "$PREV_TAG" ]; then
+            gh pr list \
+              --repo "$REPO" \
+              --state merged \
+              --search "merged:>=$(git log -1 --format=%aI $PREV_TAG)" \
+              --json number,author \
+              --jq '.[] | .author.login' | sort | uniq | while read -r author; do
+                FIRST_PR=$(gh pr list --repo "$REPO" --state merged --author "$author" --json mergedAt --jq '.[].mergedAt' | sort | head -n1)
+                RECENT_MERGE=$(gh pr list --repo "$REPO" --state merged --author "$author" --search "merged:>=$(git log -1 --format=%aI $PREV_TAG)" --json mergedAt --jq '.[].mergedAt' | sort | head -n1)
+                if [ "$FIRST_PR" = "$RECENT_MERGE" ]; then
+                  echo "- @$author" >> RELEASE.md
+                fi
+              done
+          fi
+
+          if [ -n "$PREV_TAG" ]; then
+            printf "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/compare/$PREV_TAG...$NEW_TAG\n" >> RELEASE.md
+          else
+            printf "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/commits/$NEW_TAG\n" >> RELEASE.md
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 📤 Upload GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NetSpeed Widget ${{ github.ref_name }}
+          body_path: RELEASE.md
+          files: dist/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
