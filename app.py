@@ -5,19 +5,24 @@ import threading
 import time
 import subprocess
 import win32api
+from utils.hotkeys import Hotkeys
+from tray.container import TrayController
 
+APP_NAME = "NetSpeed Widget by jn-s3s"
 PING_HOST = "google.com"
 PING_TIMEOUT_MS = 1200
-WINDOW_ALPHA = 0.72
 
 class NetSpeedWidget:
+
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("NetSpeed Widget by jn-s3s")
+        self.root.title(f"{APP_NAME}")
         self.root.configure(bg="black")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", WINDOW_ALPHA)
+
+        # Bind Hotkeys
+        Hotkeys(self).bind()
 
         # Layout Size
         self.height = 45
@@ -89,11 +94,6 @@ class NetSpeedWidget:
 
         # Clean Exit
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    def _on_close(self):
-        self._run = False
-        self._hover_guard_active = False
-        self.root.destroy()
 
     def _pack_row(self, *widgets: tk.Widget):
         row = tk.Frame(self.text_frame, bg="black")
@@ -207,8 +207,27 @@ class NetSpeedWidget:
         draw_line(self.download_speeds, self.ping_loss, "lime", 0)
         draw_line(self.upload_speeds,   self.ping_loss, "cyan", self.graph_height // 2)
 
+    def _on_close(self):
+        self._run = False
+        self._hover_guard_active = False
+        self.root.destroy()
+
+    def ui_call(self, func, *args, **kwargs):
+        self.root.after(0, lambda: func(*args, **kwargs))
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)  # keep floating
+
+    def hide_window(self):
+        self.root.withdraw()
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = NetSpeedWidget(root)
+
+    # Start system tray (separate thread)
+    tray = TrayController(app, APP_NAME)
+    tray.start()
+
     root.mainloop()

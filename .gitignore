@@ -1,3 +1,7 @@
 /build
 /dist
 *.spec
+/config.json
+/utils/__pycache__
+/mixins/__pycache__
+__pycache__
