@@ -1,10 +1,13 @@
-import tkinter as tk
-from tkinter import font as tkfont
-import psutil
 import threading
 import time
 import subprocess
+import tkinter as tk
+from tkinter import font as tkfont
+from typing import Any, Callable, Iterable
+
+import psutil
 import win32api
+
 from utils.hotkeys import Hotkeys
 from tray.container import TrayController
 
@@ -13,44 +16,53 @@ PING_HOST = "google.com"
 PING_TIMEOUT_MS = 1200
 
 class NetSpeedWidget:
+    """
+    Floating mini widget that shows current network up/down speeds with a tiny
+    two-line graph. It auto-hides on hover and restores when the cursor leaves.
+    """
 
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk) -> None:
+        """
+        Initialize UI, bind hotkeys, position the window, and start the update loop.
+        """
         self.root = root
-        self.root.title(f"{APP_NAME}")
+        self.root.title(APP_NAME)
         self.root.configure(bg="black")
-        self.root.overrideredirect(True)
-        self.root.attributes("-topmost", True)
+        self.root.overrideredirect(True)          # borderless
+        self.root.attributes("-topmost", True)    # always-on-top
 
-        # Bind Hotkeys
+        # Bind global hotkeys (opacity control)
         Hotkeys(self).bind()
 
-        # Layout Size
-        self.height = 45
-        self.graph_width = 100
-        self.graph_height = self.height - 10
+        # --- Layout sizing ---
+        self.height: int = 45
+        self.graph_width: int = 100
+        self.graph_height: int = self.height - 10
 
-        # Fonts
+        # --- Fonts ---
         self.font_value = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         self.font_unit  = tkfont.Font(family="Segoe UI", size=7)
 
-        # Layout Frame
+        # --- Layout Frames ---
         self.main_frame = tk.Frame(root, bg="black")
         self.main_frame.pack(fill="both", expand=True)
+
         self.text_frame = tk.Frame(self.main_frame, bg="black")
         self.text_frame.pack(side="left", padx=(6, 4), pady=4)
 
-        # Download row
+        # --- Download row ---
         self.lbl_down_val = tk.Label(self.text_frame, text="0.00", font=self.font_value, fg="lime", bg="black")
         self.lbl_down_unit = tk.Label(self.text_frame, text="Mb/s", font=self.font_unit, fg="#ECF8F8", bg="black")
         self.lbl_down_arrow = tk.Label(self.text_frame, text="⬇", font=self.font_unit, fg="lime", bg="black")
         self._pack_row(self.lbl_down_arrow, self.lbl_down_val, self.lbl_down_unit)
 
-        # Upload row
+        # --- Upload row ---
         self.lbl_up_val = tk.Label(self.text_frame, text="0.00", font=self.font_value, fg="cyan", bg="black")
         self.lbl_up_unit = tk.Label(self.text_frame, text="Mb/s", font=self.font_unit, fg="#ECF8F8", bg="black")
         self.lbl_up_arrow = tk.Label(self.text_frame, text="⬆", font=self.font_unit, fg="cyan", bg="black")
         self._pack_row(self.lbl_up_arrow, self.lbl_up_val, self.lbl_up_unit)
 
+        # --- Graph canvas ---
         self.canvas = tk.Canvas(
             self.main_frame,
             width=self.graph_width,
@@ -60,55 +72,67 @@ class NetSpeedWidget:
         )
         self.canvas.pack(side="right", padx=(4, 6), pady=4)
 
-        # Window Geometry (bottom-right corner)
+        # --- Window geometry (bottom-right corner of primary monitor work area) ---
         self.root.update_idletasks()
         work_area = win32api.GetMonitorInfo(win32api.MonitorFromPoint((0, 0)))['Work']
         _, _, right, bottom = work_area
         total_width = self.text_frame.winfo_reqwidth() + self.graph_width + 16
 
-        # Store values, for cursor pointer
-        self.win_width = total_width
-        self.win_height = self.height
-        self.win_x = right - total_width
-        self.win_y = bottom - self.height
+        # Store geometry values; also used by hover-guard hit test
+        self.win_width: int = total_width
+        self.win_height: int = self.height
+        self.win_x: int = right - total_width
+        self.win_y: int = bottom - self.height
         self.root.geometry(f"{self.win_width}x{self.win_height}+{self.win_x}+{self.win_y}")
 
-        # Counters
+        # --- Counters baseline ---
         counters = psutil.net_io_counters()
-        self.last_bytes_sent = counters.bytes_sent
-        self.last_bytes_recv = counters.bytes_recv
+        self.last_bytes_sent: int = counters.bytes_sent
+        self.last_bytes_recv: int = counters.bytes_recv
 
-        # Series (10 points)
+        # --- Sample series buffers (10 points) ---
         self.upload_speeds: list[float] = []
         self.download_speeds: list[float] = []
-        # ping loss flags aligned to samples; True means the segment ending at i is a drop
+        # True means the segment ending at index i had a ping drop
         self.ping_loss: list[bool] = []
 
-        # Updater Thread
-        self._run = True
+        # --- Updater thread ---
+        self._run: bool = True
         threading.Thread(target=self.update_loop, daemon=True).start()
 
-        # No blink on hover
-        self._hover_guard_active = False
+        # --- Hover/restore behavior ---
+        self._hover_guard_active: bool = False
         self.root.bind("<Enter>", self._on_mouse_enter)
 
-        # Clean Exit
+        # --- Clean exit ---
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _pack_row(self, *widgets: tk.Widget):
+    def _pack_row(self, *widgets: Any) -> None:
+        """
+        Pack a horizontal row of small labels inside text_frame.
+        """
         row = tk.Frame(self.text_frame, bg="black")
         row.pack(anchor="w")
         for w in widgets:
-            w.master = row
+            # Ensure the widget packs into the row container
+            w.master = row  # type: ignore[attr-defined]
             w.pack(side="left")
 
-    def _on_mouse_enter(self, _event=None):
+    def _on_mouse_enter(self, _event: Any = None) -> None:
+        """
+        When the cursor enters the window, hide it and begin polling until
+        the cursor leaves the widget bounds, then restore.
+        """
         if not self._hover_guard_active:
             self._hover_guard_active = True
             self.root.withdraw()
             self._poll_cursor_and_restore()
 
-    def _poll_cursor_and_restore(self):
+    def _poll_cursor_and_restore(self) -> None:
+        """
+        Poll the global cursor position; if it's still inside the last-known
+        window rect, keep waiting; otherwise restore the window once it leaves.
+        """
         if not self._hover_guard_active:
             return
 
@@ -125,6 +149,9 @@ class NetSpeedWidget:
             self._hover_guard_active = False
 
     def _ping_once(self) -> bool:
+        """
+        Perform a single ICMP ping. Returns True if ping succeeds, False otherwise.
+        """
         cmd = ["ping", PING_HOST, "-n", "1", "-w", str(PING_TIMEOUT_MS)]
         try:
             res = subprocess.run(
@@ -138,7 +165,10 @@ class NetSpeedWidget:
         except Exception:
             return False
 
-    def update_loop(self):
+    def update_loop(self) -> None:
+        """
+        Background loop (~1Hz) that samples net I/O, updates labels, and redraws the graph.
+        """
         while self._run:
             start = time.time()
             counters = psutil.net_io_counters()
@@ -153,7 +183,7 @@ class NetSpeedWidget:
 
             # Ping for this tick
             ok = self._ping_once()
-            dropped = (not ok)
+            dropped = not ok
 
             # Append Series
             self.upload_speeds.append(up_mbps)
@@ -176,13 +206,16 @@ class NetSpeedWidget:
             elapsed = time.time() - start
             time.sleep(max(0.0, 1.0 - elapsed))
 
-    def draw_graph(self):
+    def draw_graph(self) -> None:
+        """
+        Draw two polylines (download top, upload bottom). Red segment indicates ping loss.
+        """
         self.canvas.delete("all")
 
         # Base scale on max of both series
         max_speed = max(self.download_speeds + self.upload_speeds + [1.0])
 
-        def draw_line(data, loss_flags, base_color, offset_y):
+        def draw_line(data: list[float], loss_flags: list[bool], base_color: str, offset_y: int) -> None:
             n = len(data)
             if n < 2:
                 return
@@ -190,7 +223,7 @@ class NetSpeedWidget:
             half = self.graph_height // 2
 
             # Map points
-            pts = []
+            pts: list[tuple[float, float]] = []
             for i, val in enumerate(data):
                 x = i * (self.graph_width / 9.0)  # 10 samples -> 9 segments
                 y = (half - (val / max_speed) * (half - 2)) + offset_y
@@ -205,21 +238,36 @@ class NetSpeedWidget:
 
         # Download and Upload line
         draw_line(self.download_speeds, self.ping_loss, "lime", 0)
-        draw_line(self.upload_speeds,   self.ping_loss, "cyan", self.graph_height // 2)
+        draw_line(self.upload_speeds, self.ping_loss, "cyan", self.graph_height // 2)
 
-    def _on_close(self):
+    # ---------- App lifecycle / tray helpers ----------
+
+    def _on_close(self) -> None:
+        """
+        Stop loop and destroy the window.
+        """
         self._run = False
         self._hover_guard_active = False
         self.root.destroy()
 
-    def ui_call(self, func, *args, **kwargs):
+    def ui_call(self, func: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+        """
+        Schedule a callable to run on the Tk main thread.
+        Safe to call from other threads.
+        """
         self.root.after(0, lambda: func(*args, **kwargs))
 
-    def show_window(self):
+    def show_window(self) -> None:
+        """
+        Show (deiconify) the widget and keep it on top.
+        """
         self.root.deiconify()
-        self.root.attributes("-topmost", True)  # keep floating
+        self.root.attributes("-topmost", True)
 
-    def hide_window(self):
+    def hide_window(self) -> None:
+        """
+        Hide (withdraw) the widget.
+        """
         self.root.withdraw()
 
 if __name__ == "__main__":
