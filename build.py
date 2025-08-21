@@ -24,7 +24,7 @@ def main() -> None:
     )
 
     # 3. Run PyInstaller to create the EXE
-    print("⚙️ Building NetSpeed Widget.exe...")
+    print("⚙️ Building NetSpeedWidget.exe...")
     command = [
         sys.executable, "-m", "PyInstaller",
         "--onefile",                 # Bundle into a single EXE
@@ -32,7 +32,7 @@ def main() -> None:
         "--noconfirm",               # Overwrite existing build
         "--icon", "icon.ico",        # Set application icon
         "--add-data", "icon.ico;.",  # Include icon resource in bundle
-        "--name", "NetSpeed Widget", # Set application name
+        "--name", "NetSpeedWidget", # Set application name
         "app.py"                     # Entry point
     ]
 

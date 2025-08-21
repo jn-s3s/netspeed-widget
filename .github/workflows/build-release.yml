@@ -22,11 +22,10 @@ jobs:
           key: build-dist-${{ runner.os }}-${{ hashFiles('build.py', 'src/**/*.py', 'requirements.txt', '!src/**/tests/**') }}
           restore-keys: |
             build-dist-${{ runner.os }}-
-      - name: 📦 Install Dependencies
+      - name: 📦 Install/Update pip
         if: steps.build-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
       - name: 🛠️ Run Build Script
         if: steps.build-cache.outputs.cache-hit != 'true'
         run: python build.py
