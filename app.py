@@ -60,7 +60,13 @@ class NetSpeedWidget:
         work_area = win32api.GetMonitorInfo(win32api.MonitorFromPoint((0, 0)))['Work']
         _, _, right, bottom = work_area
         total_width = self.text_frame.winfo_reqwidth() + self.graph_width + 16
-        self.root.geometry(f"{total_width}x{self.height}+{right - total_width}+{bottom - self.height}")
+
+        # Store values, for cursor pointer
+        self.win_width = total_width
+        self.win_height = self.height
+        self.win_x = right - total_width
+        self.win_y = bottom - self.height
+        self.root.geometry(f"{self.win_width}x{self.win_height}+{self.win_x}+{self.win_y}")
 
         # Counters
         counters = psutil.net_io_counters()
@@ -77,24 +83,46 @@ class NetSpeedWidget:
         self._run = True
         threading.Thread(target=self.update_loop, daemon=True).start()
 
-        # Quick hide on hover
-        self.root.bind("<Enter>", lambda e: self.root.withdraw())
-        self.root.bind("<Leave>", lambda e: self.root.deiconify())
+        # No blink on hover
+        self._hover_guard_active = False
+        self.root.bind("<Enter>", self._on_mouse_enter)
 
         # Clean Exit
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
         self._run = False
+        self._hover_guard_active = False
         self.root.destroy()
 
     def _pack_row(self, *widgets: tk.Widget):
         row = tk.Frame(self.text_frame, bg="black")
         row.pack(anchor="w")
-
         for w in widgets:
             w.master = row
             w.pack(side="left")
+
+    def _on_mouse_enter(self, _event=None):
+        if not self._hover_guard_active:
+            self._hover_guard_active = True
+            self.root.withdraw()
+            self._poll_cursor_and_restore()
+
+    def _poll_cursor_and_restore(self):
+        if not self._hover_guard_active:
+            return
+
+        # Current global cursor position
+        x, y = win32api.GetCursorPos()
+        inside = (self.win_x <= x <= self.win_x + self.win_width and
+                  self.win_y <= y <= self.win_y + self.win_height)
+        if inside:
+            # keeps waiting, then retry
+            self.root.after(120, self._poll_cursor_and_restore)
+        else:
+            # restore once pointer is outside
+            self.root.deiconify()
+            self._hover_guard_active = False
 
     def _ping_once(self) -> bool:
         cmd = ["ping", PING_HOST, "-n", "1", "-w", str(PING_TIMEOUT_MS)]
