@@ -25,6 +25,7 @@ class TrayController:
         self.app_name = app_name
         self.icon: Optional[Any] = None
         self.thread: Optional[threading.Thread] = None
+        self.app.root.iconbitmap(paths.resource_path(ICON_FILE))
 
     def _load_icon(self) -> Image.Image:
         """
