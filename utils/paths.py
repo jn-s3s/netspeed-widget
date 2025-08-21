@@ -2,6 +2,7 @@ import os
 import sys
 from typing import Final
 
+
 def resource_path(relative_path: str) -> str:
     """
     Resolve an absolute filesystem path for a resource that lives alongside the app,

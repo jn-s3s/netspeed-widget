@@ -1,6 +1,7 @@
 import os
 import json
 from typing import Any, Dict
+
 from utils import paths
 
 CONFIG_FILE = "config.json"
@@ -13,11 +14,13 @@ def load_config() -> Dict[str, Any]:
     config_file_path = paths.resource_path(CONFIG_FILE)
     if not os.path.exists(config_file_path):
         return {}
+
     try:
-        with open(config_file_path, "r", encoding="utf-8") as file:
-            return json.load(file)
+        with open(config_file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception:
         return {}
+
 
 def save_config(config: Dict[str, Any]) -> None:
     """
@@ -25,8 +28,8 @@ def save_config(config: Dict[str, Any]) -> None:
     """
     config_file_path = paths.resource_path(CONFIG_FILE)
     try:
-        with open(config_file_path, "w", encoding="utf-8") as file:
-            json.dump(config, file, indent=2)
+        with open(config_file_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
     except Exception:
         # Fail silently if writing fails
         pass

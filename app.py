@@ -3,7 +3,7 @@ import time
 import subprocess
 import tkinter as tk
 from tkinter import font as tkfont
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 
 import psutil
 import win32api
@@ -14,6 +14,7 @@ from tray.container import TrayController
 APP_NAME = "NetSpeed Widget by jn-s3s"
 PING_HOST = "google.com"
 PING_TIMEOUT_MS = 1200
+
 
 class NetSpeedWidget:
     """
@@ -41,10 +42,10 @@ class NetSpeedWidget:
 
         # --- Fonts ---
         self.font_value = tkfont.Font(family="Segoe UI", size=10, weight="bold")
-        self.font_unit  = tkfont.Font(family="Segoe UI", size=7)
+        self.font_unit = tkfont.Font(family="Segoe UI", size=7)
 
         # --- Layout Frames ---
-        self.main_frame = tk.Frame(root, bg="black")
+        self.main_frame = tk.Frame(self.root, bg="black")
         self.main_frame.pack(fill="both", expand=True)
 
         self.text_frame = tk.Frame(self.main_frame, bg="black")
@@ -68,13 +69,13 @@ class NetSpeedWidget:
             width=self.graph_width,
             height=self.graph_height,
             bg="black",
-            highlightthickness=0
+            highlightthickness=0,
         )
         self.canvas.pack(side="right", padx=(4, 6), pady=4)
 
         # --- Window geometry (bottom-right corner of primary monitor work area) ---
         self.root.update_idletasks()
-        work_area = win32api.GetMonitorInfo(win32api.MonitorFromPoint((0, 0)))['Work']
+        work_area = win32api.GetMonitorInfo(win32api.MonitorFromPoint((0, 0)))["Work"]
         _, _, right, bottom = work_area
         total_width = self.text_frame.winfo_reqwidth() + self.graph_width + 16
 
@@ -141,7 +142,7 @@ class NetSpeedWidget:
         inside = (self.win_x <= x <= self.win_x + self.win_width and
                   self.win_y <= y <= self.win_y + self.win_height)
         if inside:
-            # keeps waiting, then retry
+            # keep waiting, then retry
             self.root.after(120, self._poll_cursor_and_restore)
         else:
             # restore once pointer is outside
@@ -158,8 +159,8 @@ class NetSpeedWidget:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=0x08000000,
-                check=False
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                check=False,
             )
             return res.returncode == 0
         except Exception:
@@ -185,7 +186,7 @@ class NetSpeedWidget:
             ok = self._ping_once()
             dropped = not ok
 
-            # Append Series
+            # Append series
             self.upload_speeds.append(up_mbps)
             self.download_speeds.append(down_mbps)
             self.ping_loss.append(dropped)
@@ -236,16 +237,14 @@ class NetSpeedWidget:
                 seg_color = "red" if (i < len(loss_flags) and loss_flags[i]) else base_color
                 self.canvas.create_line(x0, y0, x1, y1, fill=seg_color, width=2)
 
-        # Download and Upload line
+        # Download and Upload lines
         draw_line(self.download_speeds, self.ping_loss, "lime", 0)
         draw_line(self.upload_speeds, self.ping_loss, "cyan", self.graph_height // 2)
 
     # ---------- App lifecycle / tray helpers ----------
 
     def _on_close(self) -> None:
-        """
-        Stop loop and destroy the window.
-        """
+        """Stop loop and destroy the window."""
         self._run = False
         self._hover_guard_active = False
         self.root.destroy()
@@ -258,17 +257,14 @@ class NetSpeedWidget:
         self.root.after(0, lambda: func(*args, **kwargs))
 
     def show_window(self) -> None:
-        """
-        Show (deiconify) the widget and keep it on top.
-        """
+        """Show (deiconify) the widget and keep it on top."""
         self.root.deiconify()
         self.root.attributes("-topmost", True)
 
     def hide_window(self) -> None:
-        """
-        Hide (withdraw) the widget.
-        """
+        """Hide (withdraw) the widget."""
         self.root.withdraw()
+
 
 if __name__ == "__main__":
     root = tk.Tk()
