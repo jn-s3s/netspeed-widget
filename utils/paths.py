@@ -23,3 +23,26 @@ def resource_path(relative_path: str) -> str:
         base_dir = os.path.abspath(os.path.join(utils_dir, ".."))
 
     return os.path.join(base_dir, relative_path)
+
+
+def config_path(filename: str = "config.json") -> str:
+    """
+    Full path to the config file under %APPDATA%.
+    """
+    return os.path.join(_appdata_dir(), filename)
+
+def _appdata_dir() -> str:
+    """
+    Returns %APPDATA%\\NetSpeedWidget and creates it if missing.
+    This is a stable location for user settings on Windows.
+    """
+    base = os.getenv("APPDATA")
+    if not base:
+        # Fallback for rare cases; still lands under the user profile.
+        base = os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    target = os.path.join(base, "NetSpeedWidget")
+    try:
+        os.makedirs(target, exist_ok=True)
+    except Exception:
+        pass
+    return target
