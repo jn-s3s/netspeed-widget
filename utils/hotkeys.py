@@ -4,7 +4,7 @@ from utils import config
 # Default opacity settings
 WINDOW_ALPHA: float = 0.72
 ALPHA_STEP: float = 0.05
-ALPHA_MIN: float = 0.20
+ALPHA_MIN: float = 0.40
 ALPHA_MAX: float = 1.00
 
 

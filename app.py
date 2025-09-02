@@ -10,6 +10,7 @@ import win32api
 
 from utils.hotkeys import Hotkeys
 from tray.container import TrayController
+from utils.config import get_opacity, set_opacity as config_set_opacity
 
 APP_NAME = "NetSpeed Widget by jn-s3s"
 PING_HOST = "fast.com"
@@ -34,6 +35,14 @@ class NetSpeedWidget:
 
         # Bind global hotkeys (opacity control)
         Hotkeys(self).bind()
+
+        # Apply saved opacity
+        self.opacity = get_opacity()
+        try:
+            self.root.attributes("-alpha", self.opacity)
+        except Exception:
+            # Some environments may not support alpha; ignore safely
+            pass
 
         # --- Layout sizing ---
         self.height: int = 45
@@ -265,6 +274,24 @@ class NetSpeedWidget:
         """Hide (withdraw) the widget."""
         self.root.withdraw()
 
+    def set_opacity(self, value: float) -> None:
+        """
+        Safely update the window opacity from any thread and persist it.
+        """
+        try:
+            target = max(0.40, min(1.00, float(value)))
+        except Exception:
+            return
+
+        def _apply():
+            # persist then apply
+            self.opacity = config_set_opacity(target)
+            try:
+                self.root.attributes("-alpha", self.opacity)
+            except Exception:
+                pass
+
+        self.root.after(0, _apply)
 
 if __name__ == "__main__":
     root = tk.Tk()

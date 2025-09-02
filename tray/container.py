@@ -5,6 +5,7 @@ from PIL import Image, UnidentifiedImageError
 from pystray import Icon, Menu, MenuItem
 
 from utils import paths
+from utils.config import get_opacity
 
 ICON_FILE = "icon.ico"
 
@@ -45,6 +46,7 @@ class TrayController:
             img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
 
         menu = Menu(
+            self._opacity_submenu(),
             MenuItem("Show", lambda *_: self.app.ui_call(self.app.show_window)),
             MenuItem("Hide", lambda *_: self.app.ui_call(self.app.hide_window)),
             MenuItem("Quit", self.on_quit),
@@ -64,3 +66,55 @@ class TrayController:
             self.icon.stop()
         # Ensure Tk shutdown runs on its own main thread
         self.app.ui_call(self.app.root.destroy)
+
+    def _opacity_levels(self):
+        """
+        Returns the list of opacity levels to show in the submenu.
+        """
+        return [1.00, 0.90, 0.85, 0.80, 0.72, 0.60, 0.50, 0.45, 0.40]
+
+
+    def _opacity_checked(self, level: float):
+        """
+        Pystray 'checked' callback that marks the current level.
+        """
+        def _checked(_item):
+            try:
+                return abs(get_opacity() - level) < 0.01
+            except Exception:
+                return False
+        return _checked
+
+
+    def _make_set_opacity(self, level: float):
+        """
+        Returns a handler that sets opacity via the Tk app and refreshes the tray menu.
+        """
+        def _handler(_icon=None, _item=None):
+            # Prefer the app API if available to keep UI thread safe and persist config
+            if hasattr(self.app, "set_opacity"):
+                self.app.set_opacity(level)
+            # After change, refresh menu so the check moves
+            try:
+                if hasattr(self.icon, "update_menu"):
+                    self.icon.update_menu()
+            except Exception:
+                pass
+        return _handler
+
+
+    def _opacity_submenu(self):
+        """
+        Builds the 'Opacity' submenu with radio-like items.
+        """
+        items = []
+        for lvl in self._opacity_levels():
+            label = f"{int(lvl * 100)}%"
+            items.append(
+                MenuItem(
+                    label,
+                    self._make_set_opacity(lvl),
+                    checked=self._opacity_checked(lvl),
+                )
+            )
+        return MenuItem("Opacity", Menu(*items))
