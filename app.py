@@ -12,7 +12,7 @@ from utils.hotkeys import Hotkeys
 from tray.container import TrayController
 
 APP_NAME = "NetSpeed Widget by jn-s3s"
-PING_HOST = "google.com"
+PING_HOST = "fast.com"
 PING_TIMEOUT_MS = 1200
 
 
