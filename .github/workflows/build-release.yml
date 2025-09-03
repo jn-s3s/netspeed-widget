@@ -1,8 +1,8 @@
-name: 📦 Build release executable file
+name: 📦 Build test release executable file
 on:
   workflow_dispatch:
 jobs:
-  build-from-tag-release:
+  build-from-tag-test-release:
     runs-on: windows-latest
     steps:
       - name: 🔄 Checkout Code
@@ -31,52 +31,3 @@ jobs:
         run: python build.py
       - name: 📁 Check build output
         run: dir dist
-      - name: 📋 Generate Simple Changelog
-        id: changelog
-        shell: bash
-        run: |
-          set -e
-          git fetch --tags
-          NEW_TAG=${{ github.ref_name }}
-          REPO=${{ github.repository }}
-
-          # Find previous tag (excluding current one)
-          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${NEW_TAG}$" | tail -n 1 || true)
-
-          echo "## 🧾 What's Changed" > RELEASE.md
-
-          if [ -n "$PREV_TAG" ]; then
-            # Get previous tag date in YYYY-MM-DD
-            PREV_DATE=$(date -u -d "$(git log -1 --format=%aI $PREV_TAG)" +%Y-%m-%d)
-
-            gh pr list \
-              --repo "$REPO" \
-              --state merged \
-              --search "merged:>=$PREV_DATE" \
-              --json title,number,author \
-              --jq '.[] | "- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' \
-              >> RELEASE.md
-
-            echo -e "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/compare/${PREV_TAG}...${NEW_TAG}" >> RELEASE.md
-          else
-            gh pr list \
-              --repo "$REPO" \
-              --state merged \
-              --limit 20 \
-              --json title,number,author \
-              --jq '.[] | "- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' \
-              >> RELEASE.md
-
-            echo -e "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/releases/tag/${NEW_TAG}" >> RELEASE.md
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: 📤 Upload GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: NetSpeed Widget ${{ github.ref_name }}
-          body_path: RELEASE.md
-          files: dist/*.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
