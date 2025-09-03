@@ -48,6 +48,7 @@ def main() -> None:
         "app.py",                    # Entry point
         "--add-binary", f"{NODE_DEST};third_party/node",        # Binary for node.exe
         "--add-data", f"{FAST_BUNDLE};third_party/fast-bundle", # Data for the fast-bundle folder
+        "--hidden-import=win32api", "--hidden-import=win32con", "--hidden-import=pywintypes", "--hidden-import=pythoncom", #win32api
     ]
 
     try:
