@@ -2,3 +2,4 @@ pyinstaller
 psutil
 pystray
 speedtest-cli
+pywin32>=306
