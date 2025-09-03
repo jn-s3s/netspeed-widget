@@ -1,5 +1,5 @@
 from typing import Any, Optional
-from utils import config
+from utils.config import load_config, save_config
 
 # Default opacity settings
 WINDOW_ALPHA: float = 0.72
@@ -53,7 +53,10 @@ class Hotkeys:
         # Ensure alpha stays within allowed bounds
         self.alpha = max(ALPHA_MIN, min(ALPHA_MAX, self.alpha))
         self.app.root.attributes("-alpha", self.alpha)
-        config.save_config({"opacity": self.alpha})
+        config = load_config()
+        config["opacity"] = self.alpha
+        save_config(config)
+
 
     def _alpha_up(self, _evt: Optional[Any] = None) -> None:
         """
