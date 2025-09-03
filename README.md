@@ -5,7 +5,7 @@ It displays real-time **download/upload speeds** (Mbps) with a compact graph tha
 
 Built with **Python, Tkinter, psutil, and PyInstaller**.
 
----
+[![📦 Build release executable file](https://github.com/jn-s3s/netspeed-widget/actions/workflows/build-release.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/build-release.yml)
 
 ## ✨ Features
 
@@ -17,7 +17,9 @@ Built with **Python, Tkinter, psutil, and PyInstaller**.
   - `Ctrl + Shift + Alt + Down` → Decrease opacity
   - `Ctrl + Shift + Alt + Left` → Reset opacity
 - 🛠 System tray integration (Show / Hide / Quit)
-- 💾 Saves opacity setting
+- 🎛️ Tray settings for opacity
+- ⏱️ Periodic speedtest (default every ~4 hours) with fallbacks
+- 💾 Settings persist across app restarts (including opacity and speedtest state)
 - 🪟 Windows-only
 
 ---
@@ -25,16 +27,22 @@ Built with **Python, Tkinter, psutil, and PyInstaller**.
 ## 📥 Download
 
 You don't need to build it yourself if you just want to use it.
-A prebuilt **`.exe`** file is available in the **[Latest Release](../../releases/latest)** section of this repository.
+A prebuilt **`.exe`** is available in the **[Latest Release](../../releases/latest)** of this repository.
 
 ---
-## 📦 Requirements
 
-- Python 3.10+ on Windows
-- Dependencies (install with `pip install -r requirements.txt`):
-  - psutil
-  - pystray
-  - pyinstaller (for building exe)
+## ⚙️ Requirements
+
+- Windows 10/11 with Python 3.10+ (for running from source)
+- Install deps:
+  ```bash
+  pip install -r requirements.txt
+  ```
+- Optional (improves speedtest accuracy/availability):
+  - **fast-cli** (Node): `npm i -g fast-cli`
+  - **speedtest-cli** (Python): `pip install speedtest-cli`
+
+> Note: The app will gracefully fall back if a tool isn't present.
 
 ---
 
@@ -44,6 +52,18 @@ A prebuilt **`.exe`** file is available in the **[Latest Release](../../releases
 pip install -r requirements.txt
 python app.py
 ```
+
+---
+
+## 🧪 How speedtest works (quick overview)
+
+1) Try **fast-cli**
+2) If unavailable, try **speedtest-cli**
+3) If still unavailable, estimate via **psutil** net I/O deltas
+
+Results are cached so the **previous speedtest** is shown on startup until the next scheduled run completes.
+
+Default schedule: **every ~4 hours** while the app is running.
 
 ---
 
