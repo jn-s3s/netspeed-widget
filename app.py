@@ -53,6 +53,11 @@ class NetSpeedWidget:
           - the hover guard that hides/restores the window.
         """
         self.root = root
+        self.root.withdraw()
+        self.root.overrideredirect(True)
+        self.root.attributes("-toolwindow", True)
+        self.root.deiconify()
+
         self.root.title(APP_NAME)
         self.root.configure(bg="black")
         self.root.overrideredirect(True)          # borderless
