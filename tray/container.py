@@ -6,6 +6,7 @@ from pystray import Icon, Menu, MenuItem
 
 from utils import paths
 from utils.config import get_opacity
+from utils.logger import info
 
 ICON_FILE = "icon.ico"
 
@@ -62,6 +63,7 @@ class TrayController:
         # Run tray on its own thread so it doesn't block Tk's mainloop
         self.thread = threading.Thread(target=self.icon.run, daemon=True)
         self.thread.start()
+        info("[TRAY] System tray started")
 
 
     def on_quit(self, *_: Any) -> None:
@@ -69,6 +71,7 @@ class TrayController:
         Stop the tray icon and close the Tk application.
         This is safe to call from the tray thread.
         """
+        info("[TRAY] Quit requested")
         if self.icon:
             self.icon.stop()
         # Ensure Tk shutdown runs on its own main thread
@@ -102,6 +105,7 @@ class TrayController:
             # Prefer the app API if available to keep UI thread safe and persist config
             if hasattr(self.app, "set_opacity"):
                 self.app.set_opacity(level)
+                info(f"[TRAY] Opacity chosen {level:.2f}")
             # After change, refresh menu so the check moves
             try:
                 if hasattr(self.icon, "update_menu"):

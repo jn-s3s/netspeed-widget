@@ -20,18 +20,20 @@ from utils.config import (
     set_speedtest as config_set_speedtest,
 )
 from utils.paths import resource_path
+from utils.logger import startup, info, warn, section
 
 try:
     import speedtest as _speedtest
 except Exception:
     _speedtest = None
 
-APP_NAME = "NetSpeed Widget by jn-s3s"
+APP_VERSION = "1.1.0"
+APP_NAME = f"NetSpeed Widget v{APP_VERSION} by jn-s3s"
 FONT_FAMILY = "Segoe UI"
 PING_HOST = "fast.com"
 PING_TIMEOUT_MS = 1200
 SPEEDTEST_INTERVAL_SEC = 4 * 60 * 60  # 4 hours
-SPEEDTEST_STARTUP_GRACE_SEC = 30 # 30 seconds
+SPEEDTEST_STARTUP_GRACE_SEC = 20 # 20 seconds
 
 class NetSpeedWidget:
     """
@@ -55,6 +57,11 @@ class NetSpeedWidget:
         self.root.configure(bg="black")
         self.root.overrideredirect(True)          # borderless
         self.root.attributes("-topmost", True)    # always-on-top
+
+        # --- Log state helpers ---
+        self._last_ping_ok: bool = True
+        self._max_up_seen: float = 0.0
+        self._max_down_seen: float = 0.0
 
         # Bind global hotkeys (opacity control)
         Hotkeys(self).bind()
@@ -136,6 +143,9 @@ class NetSpeedWidget:
         # True means the segment ending at index i had a ping drop
         self.ping_loss: list[bool] = []
 
+        startup(APP_NAME)
+        info(f"[APP] Initialized at x={self.win_x} y={self.win_y} size={self.win_width}x{self.win_height} opacity={self.opacity:.2f}")
+
         # --- Updater thread ---
         self._run: bool = True
         threading.Thread(target=self.update_loop, daemon=True).start()
@@ -177,6 +187,7 @@ class NetSpeedWidget:
         """
         if not self._hover_guard_active:
             self._hover_guard_active = True
+            info("[APP] Hover hide")
             self.root.withdraw()
             self._poll_cursor_and_restore()
 
@@ -198,6 +209,7 @@ class NetSpeedWidget:
             self.root.after(120, self._poll_cursor_and_restore)
         else:
             # restore once pointer is outside
+            info("[APP] Hover restore")
             self.root.deiconify()
             self._hover_guard_active = False
 
@@ -233,12 +245,28 @@ class NetSpeedWidget:
             up_mbps = (new_sent - self.last_bytes_sent) * 8.0 / 1_000_000.0
             down_mbps = (new_recv - self.last_bytes_recv) * 8.0 / 1_000_000.0
 
+            # Log new peaks with a small threshold to avoid noise
+            if up_mbps > self._max_up_seen and up_mbps >= 1.0:
+                self._max_up_seen = up_mbps
+                info(f"[NET] New upstream peak {up_mbps:.2f} Mb/s")
+
+            if down_mbps > self._max_down_seen and down_mbps >= 1.0:
+                self._max_down_seen = down_mbps
+                info(f"[NET] New downstream peak {down_mbps:.2f} Mb/s")
+
             self.last_bytes_sent = new_sent
             self.last_bytes_recv = new_recv
 
             # Ping for this tick
             ok = self._ping_once()
             dropped = not ok
+
+            # Ping state edge logging
+            if ok and not self._last_ping_ok:
+                info("[NET] Ping restored")
+            elif not ok and self._last_ping_ok:
+                info("[NET] Ping dropped")
+            self._last_ping_ok = ok
 
             # Append series
             self.upload_speeds.append(up_mbps)
@@ -300,6 +328,7 @@ class NetSpeedWidget:
 
     def _on_close(self) -> None:
         """Stop loop and destroy the window."""
+        section("App exit")
         self._run = False
         self._hover_guard_active = False
         self.root.destroy()
@@ -315,12 +344,14 @@ class NetSpeedWidget:
 
     def show_window(self) -> None:
         """Show (deiconify) the widget and keep it on top."""
+        info("[TRAY] Show window")
         self.root.deiconify()
         self.root.attributes("-topmost", True)
 
 
     def hide_window(self) -> None:
         """Hide (withdraw) the widget."""
+        info("[TRAY] Hide window")
         self.root.withdraw()
 
 
@@ -338,6 +369,7 @@ class NetSpeedWidget:
             self.opacity = config_set_opacity(target)
             try:
                 self.root.attributes("-alpha", self.opacity)
+                info(f"[APP] Opacity set to {self.opacity:.2f}")
             except Exception:
                 pass
 
@@ -389,6 +421,7 @@ class NetSpeedWidget:
         """
         Launch a speedtest on a worker thread.
         """
+        section("Speedtest run (manual)" if manual else "Speedtest run (scheduled)")
         if self._speedtest_running:
             return
         self._speedtest_running = True
@@ -421,6 +454,7 @@ class NetSpeedWidget:
             down_mbps, up_mbps = self._measure_speed()
             saved_speedtest = config_set_speedtest(down_mbps, up_mbps)
             self._update_speedtest_ui(down_mbps, up_mbps)
+            info(f"[SPEEDTEST] Result: down={down_mbps:.2f} Mb/s, up={up_mbps:.2f} Mb/s")
             self._notify_tray(f"Speedtest: {saved_speedtest['down_mbps']:.1f}↓ | {saved_speedtest['up_mbps']:.1f}↑ Mb/s")
         except Exception:
             self._notify_tray("Speedtest: failed")
@@ -447,6 +481,7 @@ class NetSpeedWidget:
         """
         d_fast, u_fast = self._run_fast_cli()
         if d_fast is None or u_fast is None:
+            warn(f"[SPEEDTEST] fast-cli unavailable, trying next backend")
             return None
         return float(d_fast), float(u_fast)
 
@@ -458,7 +493,9 @@ class NetSpeedWidget:
         Converts bits per second to Mb/s. Threads/pre-allocation arguments are
         attempted with fallbacks for older library versions.
         """
+        info("[SPEEDTEST] Backend: speedtest-cli (python module)")
         if _speedtest is None:
+            warn(f"[SPEEDTEST] speedtest-cli unavailable, trying next backend")
             return None
         try:
             tester = _speedtest.Speedtest()
@@ -484,6 +521,7 @@ class NetSpeedWidget:
             up_mbps   = float(result.get("upload",   0.0)) / 1_000_000.0
             return down_mbps, up_mbps
         except Exception:
+            warn(f"[SPEEDTEST] speedtest-cli unavailable, trying next backend")
             return None
 
 
@@ -491,6 +529,7 @@ class NetSpeedWidget:
         """
         Estimate throughput by sampling OS network counters for ~10 seconds.
         """
+        info("[SPEEDTEST] Backend: psutil (fallback)")
         current_time = time.time()
         net_io_1 = psutil.net_io_counters()
         while time.time() - current_time < 10 and getattr(self, "_run", True):
@@ -613,6 +652,7 @@ class NetSpeedWidget:
         """
         Execute the bundled `node.exe` + fast-cli `cli.js` with `--json`.
         """
+        info("[SPEEDTEST] Backend: fast-cli (bundled Node)")
         node_exe = resource_path(os.path.join("third_party", "node", "node.exe"))
         cli_js = resource_path(os.path.join(
             "third_party", "fast-bundle", "node_modules", "fast-cli", "distribution", "cli.js"
@@ -641,6 +681,7 @@ class NetSpeedWidget:
         """
         Execute `fast` or `fast-cli` from PATH with `--json`.
         """
+        info("[SPEEDTEST] Backend: fast-cli (PATH)")
         on_path = shutil.which("fast") or shutil.which("fast-cli")
         if not on_path:
             return None
