@@ -1,6 +1,8 @@
 name: 📦 Build test release executable file
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - test-build
 jobs:
   build-from-tag-test-release:
     runs-on: windows-latest
