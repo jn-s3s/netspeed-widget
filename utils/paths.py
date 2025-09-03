@@ -31,6 +31,7 @@ def config_path(filename: str = "config.json") -> str:
     """
     return os.path.join(_appdata_dir(), filename)
 
+
 def _appdata_dir() -> str:
     """
     Returns %APPDATA%\\NetSpeedWidget and creates it if missing.

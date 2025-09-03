@@ -117,6 +117,7 @@ class NetSpeedWidget:
         # --- Clean exit ---
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+
     def _pack_row(self, *widgets: Any) -> None:
         """
         Pack a horizontal row of small labels inside text_frame.
@@ -128,6 +129,7 @@ class NetSpeedWidget:
             w.master = row  # type: ignore[attr-defined]
             w.pack(side="left")
 
+
     def _on_mouse_enter(self, _event: Any = None) -> None:
         """
         When the cursor enters the window, hide it and begin polling until
@@ -137,6 +139,7 @@ class NetSpeedWidget:
             self._hover_guard_active = True
             self.root.withdraw()
             self._poll_cursor_and_restore()
+
 
     def _poll_cursor_and_restore(self) -> None:
         """
@@ -158,6 +161,7 @@ class NetSpeedWidget:
             self.root.deiconify()
             self._hover_guard_active = False
 
+
     def _ping_once(self) -> bool:
         """
         Perform a single ICMP ping. Returns True if ping succeeds, False otherwise.
@@ -174,6 +178,7 @@ class NetSpeedWidget:
             return res.returncode == 0
         except Exception:
             return False
+
 
     def update_loop(self) -> None:
         """
@@ -215,6 +220,7 @@ class NetSpeedWidget:
             # Pace to ~1s
             elapsed = time.time() - start
             time.sleep(max(0.0, 1.0 - elapsed))
+
 
     def draw_graph(self) -> None:
         """
@@ -258,6 +264,7 @@ class NetSpeedWidget:
         self._hover_guard_active = False
         self.root.destroy()
 
+
     def ui_call(self, func: Callable[..., None], *args: Any, **kwargs: Any) -> None:
         """
         Schedule a callable to run on the Tk main thread.
@@ -265,14 +272,17 @@ class NetSpeedWidget:
         """
         self.root.after(0, lambda: func(*args, **kwargs))
 
+
     def show_window(self) -> None:
         """Show (deiconify) the widget and keep it on top."""
         self.root.deiconify()
         self.root.attributes("-topmost", True)
 
+
     def hide_window(self) -> None:
         """Hide (withdraw) the widget."""
         self.root.withdraw()
+
 
     def set_opacity(self, value: float) -> None:
         """

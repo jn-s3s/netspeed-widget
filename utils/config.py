@@ -33,14 +33,15 @@ def save_config(config: Dict[str, Any]) -> None:
         # Fail silently if writing fails
         pass
 
+
 def get_opacity(default: float = 0.72) -> float:
     """
     Returns current UI opacity in a safe range 0.40–1.00.
     Falls back to default if missing or invalid.
     """
-    cfg = load_config()
+    config = load_config()
     try:
-        val = float(cfg.get("opacity", default))
+        val = float(config.get("opacity", default))
         return max(0.40, min(1.00, val))
     except Exception:
         return default
@@ -51,7 +52,7 @@ def set_opacity(value: float) -> float:
     Persists UI opacity to config and returns the clamped value.
     """
     clamped = max(0.40, min(1.00, float(value)))
-    cfg = load_config()
-    cfg["opacity"] = clamped
-    save_config(cfg)
+    config = load_config()
+    config["opacity"] = clamped
+    save_config(config)
     return clamped

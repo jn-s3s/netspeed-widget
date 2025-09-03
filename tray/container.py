@@ -28,12 +28,14 @@ class TrayController:
         self.thread: Optional[threading.Thread] = None
         self.app.root.iconbitmap(paths.resource_path(ICON_FILE))
 
+
     def _load_icon(self) -> Image.Image:
         """
         Load the tray icon image from bundled resources.
         """
         icon_path = paths.resource_path(ICON_FILE)
         return Image.open(icon_path)
+
 
     def start(self) -> None:
         """
@@ -57,6 +59,7 @@ class TrayController:
         self.thread = threading.Thread(target=self.icon.run, daemon=True)
         self.thread.start()
 
+
     def on_quit(self, *_: Any) -> None:
         """
         Stop the tray icon and close the Tk application.
@@ -66,6 +69,7 @@ class TrayController:
             self.icon.stop()
         # Ensure Tk shutdown runs on its own main thread
         self.app.ui_call(self.app.root.destroy)
+
 
     def _opacity_levels(self):
         """

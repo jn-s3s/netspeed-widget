@@ -20,12 +20,14 @@ class Hotkeys:
         self.app = app
         self.alpha: float = WINDOW_ALPHA
 
+
     def bind(self) -> None:
         """
         Bind all hotkeys and set the initial opacity from the config.
         """
         self._bind_hotkeys()
         self._set_initial_opacity()
+
 
     def _bind_hotkeys(self) -> None:
         """
@@ -35,12 +37,14 @@ class Hotkeys:
         self.app.root.bind("<Control-Shift-Alt-Down>", self._alpha_down)
         self.app.root.bind("<Control-Shift-Alt-Left>", self._alpha_reset)
 
+
     def _set_initial_opacity(self) -> None:
         """
         Load initial opacity from config or use the default value.
         """
-        self.alpha = float(config.load_config().get("opacity", WINDOW_ALPHA))
+        self.alpha = float(load_config().get("opacity", WINDOW_ALPHA))
         self._apply_alpha()
+
 
     def _apply_alpha(self) -> None:
         """
@@ -58,12 +62,14 @@ class Hotkeys:
         self.alpha += ALPHA_STEP
         self._apply_alpha()
 
+
     def _alpha_down(self, _evt: Optional[Any] = None) -> None:
         """
         Decrease opacity by ALPHA_STEP.
         """
         self.alpha -= ALPHA_STEP
         self._apply_alpha()
+
 
     def _alpha_reset(self, _evt: Optional[Any] = None) -> None:
         """
