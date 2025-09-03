@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from typing import Any, Dict
 
 from utils.paths import config_path
@@ -56,3 +57,33 @@ def set_opacity(value: float) -> float:
     config["opacity"] = clamped
     save_config(config)
     return clamped
+
+
+def get_speedtest(default: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
+    """
+    Returns the last saved speedtest dict or default.
+    Dict looks like: {"down_mbps": float, "up_mbps": float, "ts": float}
+    """
+    try:
+        config = load_config()
+        speedtest = config.get("speedtest")
+        if isinstance(speedtest, dict) and {"down_mbps", "up_mbps", "ts"} <= set(speedtest.keys()):
+            return speedtest
+        return default
+    except Exception:
+        return default
+
+
+def set_speedtest(down_mbps: float, up_mbps: float, ts: float | None = None) -> Dict[str, Any]:
+    """
+    Saves a compact speedtest snapshot. Returns the saved dict.
+    """
+    payload = {
+        "down_mbps": round(float(down_mbps), 2),
+        "up_mbps": round(float(up_mbps), 2),
+        "ts": float(ts if ts is not None else time.time()),
+    }
+    config = load_config()
+    config["speedtest"] = payload
+    save_config(config)
+    return payload

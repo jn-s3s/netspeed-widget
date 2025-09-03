@@ -1,7 +1,12 @@
-/build
-/dist
+# Build artifacts
+build/
+dist/
 *.spec
+__pycache__/
+
+# Generated for fast.com runtime
+third_party/node/
+third_party/fast-bundle/
+
+# Others
 /config.json
-/utils/__pycache__
-/mixins/__pycache__
-__pycache__

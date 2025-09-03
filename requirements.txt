@@ -1,3 +1,4 @@
 pyinstaller
 psutil
 pystray
+speedtest-cli
