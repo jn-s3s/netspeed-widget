@@ -36,12 +36,13 @@ jobs:
         shell: bash
         run: |
           set -e
-          git fetch --tags
+          git fetch --tags --force --prune
+
           NEW_TAG=${{ github.ref_name }}
           REPO=${{ github.repository }}
 
-          # Find previous tag (excluding current one)
-          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${NEW_TAG}$" | tail -n 1 || true)
+          # Previous tag along the same history as NEW_TAG
+          PREV_TAG="$(git describe --tags --abbrev=0 "${NEW_TAG}^" 2>/dev/null || true)"
 
           echo "## 🧾 What's Changed" > RELEASE.md
 
@@ -49,13 +50,30 @@ jobs:
             # Get previous tag date in YYYY-MM-DD
             PREV_DATE=$(date -u -d "$(git log -1 --format=%aI $PREV_TAG)" +%Y-%m-%d)
 
-            gh pr list \
-              --repo "$REPO" \
-              --state merged \
-              --search "merged:>=$PREV_DATE" \
-              --json title,number,author \
-              --jq '.[] | "- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' \
-              >> RELEASE.md
+            # Get PR numbers from commits between the two tags
+            # Works with both squash merges like "Title (#123)" and merge commits "Merge pull request #123"
+            mapfile -t PRS < <(
+              git log --pretty=%s "${PREV_TAG}..${NEW_TAG}" \
+              | sed -nE 's/.*\(#([0-9]+)\).*/\1/p; t; s/^Merge pull request #([0-9]+).*/\1/p' \
+              | sort -un
+            )
+
+            if [[ ${#PRS[@]} -eq 0 ]]; then
+              PREV_DATE="$(git show -s --format=%cI "${PREV_TAG}^{ }")"
+              NEW_DATE="$(git show -s --format=%cI "${NEW_TAG}^{ }")"
+              gh pr list \
+                --repo "$REPO" \
+                --state merged \
+                --search "merged:>=$PREV_DATE merged:<$NEW_DATE" \
+                --json title,number,author \
+                --jq '.[] | "- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"' \
+                >> RELEASE.md
+            else
+              for n in "${PRS[@]}"; do
+                gh pr view "$n" --repo "$REPO" --json title,number,author \
+                  --jq '"- \(.title) [#\(.number)](https://github.com/'"$REPO"'/pull/\(.number)) by @\(.author.login)"'
+              done >> RELEASE.md
+            fi
 
             echo -e "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/compare/${PREV_TAG}...${NEW_TAG}" >> RELEASE.md
           else
