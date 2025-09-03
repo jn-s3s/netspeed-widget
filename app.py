@@ -27,7 +27,7 @@ try:
 except Exception:
     _speedtest = None
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.0.0"
 APP_NAME = f"NetSpeed Widget v{APP_VERSION} by jn-s3s"
 FONT_FAMILY = "Segoe UI"
 PING_HOST = "fast.com"
