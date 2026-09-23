@@ -79,13 +79,20 @@ exactly the tree recorded in the committed `third_party/fast-bundle/package-lock
 Bumping fast-cli means changing `FAST_CLI_VERSION`, regenerating that lockfile
 and reviewing which transitive packages moved, all in one commit.
 
-The output is a single `dist/NetSpeedWidget.exe` with the icon, the Node runtime
-and fast-cli embedded. Release builds set the `APP_VERSION` environment variable
-(CI passes the git tag), so release artifacts are named
-`dist/NetSpeedWidget-<version>.exe`. A tagged build whose tag differs from
-`utils/version.APP_VERSION` is refused, because that constant is what the
-window title, the tray tooltip and the log report. Double-click the exe and the
-widget appears.
+An untagged local build writes `dist/NetSpeedWidget/`. Release builds set the
+`APP_VERSION` environment variable (CI passes the git tag), so the directory is
+versioned instead: `dist/NetSpeedWidget-<version>/`. It contains the executable,
+its `_internal` directory and the bundled Node runtime and fast-cli resources.
+
+The release workflow packages that directory as a
+`NetSpeedWidget-<version>-windows-x64.zip` file with a versioned top-level
+folder. Extract the whole ZIP before running the application. The executable
+must stay beside its `_internal` directory, which contains the bundled
+resources; do not move or rename the executable by itself.
+
+A tagged build whose tag differs from `utils/version.APP_VERSION` is refused,
+because that constant is what the window title, the tray tooltip and the log
+report.
 
 ## Development
 
@@ -160,7 +167,7 @@ CI runs the same command on every push and pull request, and again before every 
 - pystray and Pillow for the tray icon, pywin32 for the global hotkey and Win32 integration.
 - psutil for network counters, speedtest-cli as one of the speedtest providers.
 - A bundled Node.js runtime with fast-cli as the primary speedtest provider.
-- PyInstaller builds the exe, Ruff lints and formats, GitHub Actions runs CI and releases.
+- PyInstaller packages the app folder, Ruff lints and formats, GitHub Actions runs CI and releases.
 
 ---
 
