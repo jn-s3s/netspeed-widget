@@ -12,7 +12,9 @@ from dataclasses import dataclass
 
 import psutil
 
-from utils.logger import warn
+from utils.logger import get
+
+_log = get("sampler")
 
 
 @dataclass(frozen=True)
@@ -82,7 +84,7 @@ class NetSampler:
         try:
             counters = psutil.net_io_counters()
         except OSError as err:
-            warn(f"[SAMPLER] failed to read net counters: {err}")
+            _log.warning(f"failed to read net counters: {err}")
             return
 
         self._record_sample(counters.bytes_sent, counters.bytes_recv, time.monotonic())
@@ -92,7 +94,7 @@ class NetSampler:
             try:
                 counters = psutil.net_io_counters()
             except OSError as err:
-                warn(f"[SAMPLER] counter read failed: {err}")
+                _log.warning(f"counter read failed: {err}")
                 continue
             self._record_sample(counters.bytes_sent, counters.bytes_recv, now)
 

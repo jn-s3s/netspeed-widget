@@ -13,6 +13,7 @@ report "taken, pick another" instead of silently stealing keys.
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import pywintypes
@@ -20,7 +21,9 @@ import win32api
 import win32con
 import win32gui
 
-from utils.logger import warn
+from utils.logger import get
+
+_log = get("hotkey")
 
 _WM_APPLY = win32con.WM_USER + 1
 
@@ -158,6 +161,21 @@ def combo_from_tk_event(event: Any) -> str | None:
     return "+".join([m for m in _MOD_ORDER if m in mods] + [key])
 
 
+@dataclass
+class _ApplyRequest:
+    """One in-flight registration handed from the Tk thread to the listener.
+
+    The caller keeps its own reference, so a request that times out can
+    never have its result read by, or overwritten for, another caller.
+    """
+
+    mod: int
+    vk: int
+    done: threading.Event
+    ok: bool = False
+    error: str | None = None
+
+
 class GlobalHotkey:
     """Owns one system-wide hotkey registration and its listener thread.
 
@@ -165,13 +183,20 @@ class GlobalHotkey:
     call off the Tk thread (for example, wrapped in app.ui_call).
     """
 
-    HOTKEY_ID = 1
+    # Two ids let a re-registration bind the new combo before releasing the
+    # old one, so a combo the system rejects cannot leave the user with
+    # nothing bound.
+    HOTKEY_IDS = (1, 2)
 
     def __init__(self, on_trigger: Callable[[], None]) -> None:
         self._on_trigger = on_trigger
         self._hwnd: int | None = None
         self._init_error: str | None = None
-        self._pending: dict | None = None
+        self._request: _ApplyRequest | None = None
+        self._request_lock = threading.Lock()
+        self._apply_lock = threading.Lock()
+        self._active_id: int | None = None
+        self._class_atom: int | None = None
         ready = threading.Event()
         self._thread = threading.Thread(
             target=self._run, args=(ready,), name="hotkey-listener", daemon=True
@@ -190,10 +215,10 @@ class GlobalHotkey:
                 win32con.WM_CLOSE: self._wm_close,
                 _WM_APPLY: self._wm_apply,
             }
-            atom = win32gui.RegisterClass(wnd_class)
+            self._class_atom = win32gui.RegisterClass(wnd_class)
             self._hwnd = win32gui.CreateWindowEx(
                 0,
-                atom,
+                self._class_atom,
                 "NetSpeedHotkeySink",
                 0,
                 0,
@@ -205,14 +230,38 @@ class GlobalHotkey:
                 win32api.GetModuleHandle(None),
                 None,
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - reported to the caller instead
             self._init_error = str(err)
+            _log.error(f"listener window could not start: {err}")
         ready.set()
-        if self._hwnd is not None:
+        if self._hwnd is None:
+            return
+        try:
             win32gui.PumpMessages()
+        except Exception as err:  # noqa: BLE001 - a dead pump must not hang apply
+            _log.error(f"hotkey message pump failed: {err}")
+        finally:
+            self._release_class()
+
+    def _release_class(self) -> None:
+        """Drop the window handle and unregister the class this thread made."""
+        self._hwnd = None
+        self._active_id = None
+        if self._class_atom is None:
+            return
+        try:
+            win32gui.UnregisterClass(self._class_atom, win32api.GetModuleHandle(None))
+        except pywintypes.error as err:
+            _log.warning(f"could not unregister the hotkey window class: {err}")
+        self._class_atom = None
 
     def apply_combo(self, combo: str) -> tuple[bool, str | None]:
-        """Validate and register a combo. Returns (ok, error message)."""
+        """Validate and register a combo. Returns (ok, error message).
+
+        Only one registration runs at a time: a caller waiting on the
+        listener cannot be interleaved with a second request that would
+        overwrite the shared slot.
+        """
         try:
             modifiers, vk = parse_hotkey(combo)
         except ValueError as err:
@@ -220,64 +269,77 @@ class GlobalHotkey:
         if self._hwnd is None:
             return False, self._init_error or "hotkey listener unavailable"
 
-        done = threading.Event()
-        self._pending = {
-            "mod": modifiers,
-            "vk": vk,
-            "done": done,
-            "ok": False,
-            "error": None,
-        }
-        try:
-            win32gui.PostMessage(self._hwnd, _WM_APPLY, 0, 0)
-        except pywintypes.error as err:
-            return False, str(err)
-        if not done.wait(timeout=2):
-            return False, "hotkey listener did not respond"
-        return bool(self._pending["ok"]), self._pending["error"]
+        request = _ApplyRequest(mod=modifiers, vk=vk, done=threading.Event())
+        with self._apply_lock:
+            with self._request_lock:
+                self._request = request
+            try:
+                win32gui.PostMessage(self._hwnd, _WM_APPLY, 0, 0)
+            except pywintypes.error as err:
+                with self._request_lock:
+                    self._request = None
+                return False, str(err)
+            if not request.done.wait(timeout=2):
+                with self._request_lock:
+                    self._request = None
+                return False, "hotkey listener did not respond within 2s"
+        return request.ok, request.error
 
     def stop(self) -> None:
         """Unregister the hotkey and shut the listener thread down."""
-        if self._hwnd is None:
+        hwnd = self._hwnd
+        if hwnd is None:
             return
-        try:
-            win32gui.PostMessage(self._hwnd, win32con.WM_CLOSE, 0, 0)
-        except pywintypes.error:
-            pass
         self._hwnd = None
+        try:
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        except pywintypes.error as err:
+            _log.warning(f"could not signal the hotkey listener to close: {err}")
+
+    def _take_request(self) -> _ApplyRequest | None:
+        with self._request_lock:
+            request, self._request = self._request, None
+        return request
 
     def _wm_apply(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
-        req = self._pending
-        try:
-            win32gui.UnregisterHotKey(self._hwnd, self.HOTKEY_ID)
-        except pywintypes.error:
-            pass  # nothing registered yet
+        req = self._take_request()
+        if req is None:
+            return 0
+        candidate = next(idle for idle in self.HOTKEY_IDS if idle != self._active_id)
         try:
             win32gui.RegisterHotKey(
-                self._hwnd,
-                self.HOTKEY_ID,
-                req["mod"] | win32con.MOD_NOREPEAT,
-                req["vk"],
+                hwnd, candidate, req.mod | win32con.MOD_NOREPEAT, req.vk
             )
-            req["ok"] = True
         except pywintypes.error as err:
-            req["error"] = getattr(err, "strerror", None) or str(err)
-        req["done"].set()
+            req.error = getattr(err, "strerror", None) or str(err)
+            _log.warning(f"rejected {req.mod}+{req.vk}: {req.error}")
+            req.done.set()
+            return 0
+        if self._active_id is not None:
+            try:
+                win32gui.UnregisterHotKey(hwnd, self._active_id)
+            except pywintypes.error as err:
+                _log.warning(f"could not release the previous hotkey id: {err}")
+        self._active_id = candidate
+        req.ok = True
+        req.done.set()
         return 0
 
     def _wm_hotkey(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
-        if wparam == self.HOTKEY_ID:
+        if wparam in self.HOTKEY_IDS:
             try:
                 self._on_trigger()
-            except Exception as err:
-                warn(f"[HOTKEY] callback failed: {err}")
+            except Exception as err:  # noqa: BLE001 - keep the message pump alive
+                _log.error(f"callback failed: {err}")
         return 0
 
     def _wm_close(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
-        try:
-            win32gui.UnregisterHotKey(hwnd, self.HOTKEY_ID)
-        except pywintypes.error:
-            pass  # nothing registered
+        for hotkey_id in self.HOTKEY_IDS:
+            try:
+                win32gui.UnregisterHotKey(hwnd, hotkey_id)
+            except pywintypes.error:
+                pass  # documented contract: this id was never registered
+        self._active_id = None
         win32gui.DestroyWindow(hwnd)
         win32gui.PostQuitMessage(0)
         return 0

@@ -6,6 +6,11 @@ Providers are tried in order and the first successful result wins:
 2. fast-cli or fast on PATH
 3. the speedtest-cli Python package (imported lazily for fast startup)
 4. a passive estimate from psutil counter deltas
+
+Only the first three measure the link, so only they are kept as a result.
+The passive provider reports what traffic happened to cross the wire, which
+is meaningless on an idle connection, so it returns None unless it observed
+a real load and its outcome is labelled as an estimate wherever it appears.
 """
 
 import json
@@ -19,41 +24,64 @@ from typing import Any
 
 import psutil
 
-from utils.logger import info, warn
-from utils.paths import resource_path
+from utils.logger import get
+from utils.paths import bundled_node_path, fast_bundle_dir, fast_cli_entry_path
 
 FAST_TIMEOUT_SEC = 180
 PASSIVE_SAMPLE_SEC = 10
+PASSIVE_MIN_MBPS = 1.0
+
+SOURCE_FAST = "fast-cli"
+SOURCE_SPEEDTEST = "speedtest-cli"
+SOURCE_PASSIVE = "passive-estimate"
+
+_log = get("speedtest")
 
 
 @dataclass(frozen=True)
 class SpeedtestResult:
-    """Measured throughput in megabits per second."""
+    """Measured throughput in megabits per second, with its provenance.
+
+    `source` names the provider that produced the number. Only
+    `SOURCE_PASSIVE` is an observation of incidental traffic rather than a
+    measurement, which is what tells the caller whether to persist it.
+    """
 
     down_mbps: float
     up_mbps: float
+    source: str
+
+    @property
+    def measured(self) -> bool:
+        """True when a provider probed the link rather than watched it."""
+        return self.source != SOURCE_PASSIVE
 
 
 def measure_speed() -> SpeedtestResult:
     """Try each provider in order and return the first success.
 
     Raises:
-        RuntimeError: If every provider fails.
+        RuntimeError: If every provider failed, naming them for the log.
     """
-    providers: tuple[Callable[[], SpeedtestResult | None], ...] = (
-        _measure_fast_cli,
-        _measure_python_speedtest,
-        _measure_passive_estimate,
+    providers: tuple[tuple[str, Callable[[], SpeedtestResult | None]], ...] = (
+        (SOURCE_FAST, _measure_fast_cli),
+        (SOURCE_SPEEDTEST, _measure_python_speedtest),
+        (SOURCE_PASSIVE, _measure_passive_estimate),
     )
-    for provider in providers:
+    tried: list[str] = []
+    for label, provider in providers:
         try:
             result = provider()
-        except Exception as err:
-            warn(f"[SPEEDTEST] {provider.__name__} raised: {err}")
+        except Exception as err:  # noqa: BLE001 - a backend can fail in any shape
+            _log.warning(f"{label} raised: {err}")
+            tried.append(label)
             continue
         if result is not None:
             return result
-    raise RuntimeError("all speedtest providers failed")
+        tried.append(label)
+    raise RuntimeError(
+        f"no speedtest result; every backend failed or gave nothing: {', '.join(tried)}"
+    )
 
 
 def _measure_fast_cli() -> SpeedtestResult | None:
@@ -61,9 +89,9 @@ def _measure_fast_cli() -> SpeedtestResult | None:
     data = _run_fast_cli()
     down, up = _parse_fast_result(data)
     if down is None or up is None:
-        warn("[SPEEDTEST] fast-cli unavailable, trying next backend")
+        _log.warning("fast-cli gave no usable speeds, trying next backend")
         return None
-    return SpeedtestResult(down_mbps=down, up_mbps=up)
+    return SpeedtestResult(down_mbps=down, up_mbps=up, source=SOURCE_FAST)
 
 
 def _measure_python_speedtest() -> SpeedtestResult | None:
@@ -71,10 +99,10 @@ def _measure_python_speedtest() -> SpeedtestResult | None:
     try:
         import speedtest as speedtest_module
     except ImportError:
-        warn("[SPEEDTEST] speedtest-cli not installed, trying next backend")
+        _log.warning("speedtest-cli not installed, trying next backend")
         return None
 
-    info("[SPEEDTEST] Backend: speedtest-cli (python module)")
+    _log.info("backend: speedtest-cli (python module)")
     try:
         tester = speedtest_module.Speedtest()
         tester.get_servers(None)
@@ -98,25 +126,38 @@ def _measure_python_speedtest() -> SpeedtestResult | None:
         return SpeedtestResult(
             down_mbps=float(result.get("download", 0.0)) / 1_000_000.0,
             up_mbps=float(result.get("upload", 0.0)) / 1_000_000.0,
+            source=SOURCE_SPEEDTEST,
         )
-    except Exception as err:
-        warn(f"[SPEEDTEST] speedtest-cli failed: {err}")
+    except Exception as err:  # noqa: BLE001 - third-party failures are not typed
+        _log.warning(f"speedtest-cli failed: {err}")
         return None
 
 
 def _measure_passive_estimate() -> SpeedtestResult | None:
-    """Estimate throughput by sampling OS counters for a few seconds."""
-    info("[SPEEDTEST] Backend: psutil (passive fallback)")
-    start = time.time()
+    """Estimate throughput from OS counters, only when real traffic ran.
+
+    Returns None on an idle window. Counting bytes that nobody asked to
+    move would otherwise publish a near-zero figure as the user's line
+    rate, and a negative one after an adapter reset.
+    """
+    _log.info(f"backend: psutil passive estimate over {PASSIVE_SAMPLE_SEC}s")
+    start = time.monotonic()
     first = psutil.net_io_counters()
     time.sleep(PASSIVE_SAMPLE_SEC)
     second = psutil.net_io_counters()
 
-    elapsed = max(time.time() - start, 1e-6)
-    return SpeedtestResult(
-        down_mbps=(second.bytes_recv - first.bytes_recv) * 8.0 / elapsed / 1e6,
-        up_mbps=(second.bytes_sent - first.bytes_sent) * 8.0 / elapsed / 1e6,
-    )
+    elapsed = max(time.monotonic() - start, 1e-6)
+    down_bytes = max(second.bytes_recv - first.bytes_recv, 0)
+    up_bytes = max(second.bytes_sent - first.bytes_sent, 0)
+    down = down_bytes * 8.0 / elapsed / 1e6
+    up = up_bytes * 8.0 / elapsed / 1e6
+    if max(down, up) < PASSIVE_MIN_MBPS:
+        _log.warning(
+            f"passive estimate saw no usable traffic in {elapsed:.1f}s "
+            f"({down:.2f} down, {up:.2f} up Mb/s)"
+        )
+        return None
+    return SpeedtestResult(down_mbps=down, up_mbps=up, source=SOURCE_PASSIVE)
 
 
 def _configure_speedtest(tester: Any) -> None:
@@ -142,8 +183,8 @@ def _configure_speedtest(tester: Any) -> None:
         sizes["upload_max"] = 30 * 1024 * 1024
         config["sizes"] = sizes
         tester.config.update(config)
-    except Exception as err:
-        warn(f"[SPEEDTEST] could not tune upload sizes: {err}")
+    except Exception as err:  # noqa: BLE001 - tuning is optional, never fatal
+        _log.warning(f"could not tune upload sizes: {err}")
 
 
 def _run_fast_cli() -> dict | None:
@@ -165,28 +206,19 @@ def _fast_spawn_settings() -> dict:
 
 
 def _run_node_bundle_fast(**spawn_kw: Any) -> dict | None:
-    """Execute the bundled node.exe + fast-cli cli.js with --json."""
-    info("[SPEEDTEST] Backend: fast-cli (bundled Node)")
-    node_exe = resource_path(os.path.join("third_party", "node", "node.exe"))
-    cli_js = resource_path(
-        os.path.join(
-            "third_party",
-            "fast-bundle",
-            "node_modules",
-            "fast-cli",
-            "distribution",
-            "cli.js",
-        )
-    )
-    bundle_cwd = resource_path(os.path.join("third_party", "fast-bundle"))
+    """Execute the bundled node.exe and fast-cli cli.js with --json."""
+    node_exe = bundled_node_path()
+    cli_js = fast_cli_entry_path()
+    bundle_cwd = fast_bundle_dir()
 
-    if not (os.path.isfile(node_exe) and os.path.isfile(cli_js)):
+    if not (node_exe.is_file() and cli_js.is_file()):
         return None
 
+    _log.info(f"backend: fast-cli (bundled Node at {node_exe.parent})")
     try:
         process = subprocess.run(
-            [node_exe, cli_js, "--upload", "--json"],
-            cwd=bundle_cwd,
+            [str(node_exe), str(cli_js), "--upload", "--json"],
+            cwd=str(bundle_cwd),
             capture_output=True,
             text=True,
             timeout=FAST_TIMEOUT_SEC,
@@ -195,17 +227,17 @@ def _run_node_bundle_fast(**spawn_kw: Any) -> dict | None:
         )
         return json.loads(process.stdout.strip() or "{}")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as err:
-        warn(f"[SPEEDTEST] bundled fast-cli failed: {err}")
+        _log.warning(f"bundled fast-cli failed: {err}")
         return None
 
 
 def _run_path_fast(**spawn_kw: Any) -> dict | None:
     """Execute fast or fast-cli from PATH with --json."""
-    info("[SPEEDTEST] Backend: fast-cli (PATH)")
     on_path = shutil.which("fast") or shutil.which("fast-cli")
     if not on_path:
         return None
 
+    _log.info(f"backend: fast-cli (PATH at {on_path})")
     try:
         process = subprocess.run(
             [on_path, "--upload", "--json"],
@@ -217,7 +249,7 @@ def _run_path_fast(**spawn_kw: Any) -> dict | None:
         )
         return json.loads(process.stdout.strip() or "{}")
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as err:
-        warn(f"[SPEEDTEST] PATH fast-cli failed: {err}")
+        _log.warning(f"PATH fast-cli failed: {err}")
         return None
 
 

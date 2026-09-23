@@ -7,6 +7,11 @@ on daemon threads and publish snapshots that the UI polls through
 `root.after`. The saved window position is validated against the
 currently connected monitors so the widget can never be stranded on a
 screen that is no longer attached.
+
+Work with its own inputs and outputs lives beside this module:
+`utils.monitors` for display geometry, `utils.graph` for the traffic plot,
+`utils.schedule` for when the next speedtest is due and
+`utils.hotkey_dialog` for the capture window.
 """
 
 import threading
@@ -22,61 +27,60 @@ import win32api
 import win32con
 
 from tray.container import TrayController
+from utils import hotkey_dialog, monitors
 from utils.config import (
+    OPACITY_LEVELS,
+    clamp_opacity,
     get_hide_on_hover,
     get_hotkey,
     get_opacity,
     get_position,
-)
-from utils.config import (
-    get_speedtest as config_get_speedtest,
-)
-from utils.config import (
-    set_hide_on_hover as config_set_hide_on_hover,
-)
-from utils.config import (
-    set_hotkey as config_set_hotkey,
+    get_speedtest,
+    set_hide_on_hover,
+    set_hotkey,
+    set_position,
+    set_speedtest,
 )
 from utils.config import (
     set_opacity as config_set_opacity,
 )
-from utils.config import (
-    set_position as config_set_position,
-)
-from utils.config import (
-    set_speedtest as config_set_speedtest,
-)
 from utils.format import format_speed
-from utils.hotkeys import GlobalHotkey, combo_from_tk_event, format_hotkey
+from utils.graph import TrafficGraph
+from utils.hotkeys import GlobalHotkey, format_hotkey
 from utils.latency import LatencyProbe
-from utils.logger import info, section, startup, warn
+from utils.logger import get, section, startup
+from utils.paths import icon_path
 from utils.sampler import NetSample, NetSampler
+from utils.schedule import next_speedtest_due
 from utils.speedtest import measure_speed
+from utils.theme import (
+    BAD_COLOR,
+    BORDER,
+    BORDER_HOVER,
+    DOWN_COLOR,
+    FG,
+    FG_DIM,
+    FONT_FAMILY,
+    GOOD_COLOR,
+    SURFACE,
+    TRANSPARENT,
+    UP_COLOR,
+    WARN_COLOR,
+    rounded_rect,
+)
+from utils.version import APP_NAME
 
-APP_VERSION = "2.0.0"
-APP_NAME = f"NetSpeed Widget v{APP_VERSION} by jn-s3s"
+_log = get("app")
+_net_log = get("sampler")
 
-# Theme
-SURFACE = "#161b22"
-BORDER = "#2c333d"
-BORDER_HOVER = "#3d4757"
-FG = "#e6edf3"
-FG_DIM = "#8b949e"
-DOWN_COLOR = "#3fb950"
-UP_COLOR = "#58a6ff"
-DOWN_FILL = "#12321c"
-GOOD_COLOR = "#3fb950"
-WARN_COLOR = "#d29922"
-BAD_COLOR = "#f85149"
-TRANSPARENT = "#ff00ff"
-
-FONT_FAMILY = "Segoe UI"
 UI_TICK_MS = 250
 GRAPH_SAMPLES = 60
 CORNER_MARGIN = 12
 MONITOR_CHECK_TICKS = 16
+TICK_REPORT_EVERY = 40
 SPEEDTEST_INTERVAL_SEC = 4 * 60 * 60
 SPEEDTEST_STARTUP_GRACE_SEC = 20
+SPEEDTEST_RETRY_SEC = 15 * 60
 
 # Pill geometry (fixed layout: two text rows plus a large graph)
 PILL_W = 340
@@ -93,52 +97,28 @@ ST_DOWN_X, ST_UP_X, ST_UNIT_X = 24, 66, 108
 GRAPH_X0, GRAPH_W = 190, 142
 GRAPH_TOP, GRAPH_BOTTOM = 6, PILL_H - 6
 
-
-def _rounded_rect(
-    canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kw: Any
-) -> int:
-    """Draw a rounded rectangle as a smoothed polygon. Returns item id."""
-    points = [
-        x1 + radius,
-        y1,
-        x2 - radius,
-        y1,
-        x2,
-        y1,
-        x2,
-        y1 + radius,
-        x2,
-        y2 - radius,
-        x2,
-        y2,
-        x2 - radius,
-        y2,
-        x1 + radius,
-        y2,
-        x1,
-        y2,
-        x1,
-        y2 - radius,
-        x1,
-        y1 + radius,
-        x1,
-        y1,
-    ]
-    return canvas.create_polygon(points, smooth=True, **kw)
+HOVER_POLL_MS = 120
+# Escape hatch: a cursor parked on the pill keeps it hidden by design, but a
+# stuck cursor query must not hide the widget for the rest of the run.
+HOVER_POLL_LIMIT = 2500
 
 
-def _active_monitor_rects() -> list[tuple[int, int, int, int]]:
-    """Return (left, top, right, bottom) for every connected monitor.
+def _mouse_button_held() -> bool:
+    """True while either mouse button is physically down.
 
-    These are full monitor rects, taskbar included, so they suit visibility
-    tests only. Anything that places the window needs the work area from
-    `GetMonitorInfo(...)["Work"]` instead.
+    A right-click taken during a drag steals mouse capture, so the left
+    release is never delivered to us and the drag state has to be resolved
+    from the button itself rather than from an event. Assuming "held" on a
+    failed query only delays the repair; guessing "released" would cut a
+    legitimate drag short.
     """
     try:
-        return [tuple(rect) for _, _, rect in win32api.EnumDisplayMonitors()]
-    except Exception as err:
-        warn(f"[APP] Could not enumerate monitors: {err}")
-        return []
+        state = win32api.GetAsyncKeyState(win32con.VK_LBUTTON)
+        state |= win32api.GetAsyncKeyState(win32con.VK_RBUTTON)
+    except Exception as err:  # noqa: BLE001 - pywin32 raises its own error type
+        _log.warning(f"could not read the mouse button state: {err}")
+        return True
+    return bool(state & 0x8000)
 
 
 class NetSpeedWidget:
@@ -168,7 +148,7 @@ class NetSpeedWidget:
         ok, err = self.hotkey.apply_combo(self._hotkey_combo)
         self._hotkey_ok = ok
         if not ok:
-            warn(f"[HOTKEY] '{self._hotkey_combo}' unavailable at startup: {err}")
+            _log.warning(f"'{self._hotkey_combo}' unavailable at startup: {err}")
 
         self.sampler = NetSampler(interval=1.0, history=GRAPH_SAMPLES)
         self.probe = LatencyProbe()
@@ -178,16 +158,16 @@ class NetSpeedWidget:
         self._last_sample_ts = 0.0
         self._smooth_down = 0.0
         self._smooth_up = 0.0
-        self._graph_scale = 1.0
         self._max_up_seen = 0.0
         self._max_down_seen = 0.0
         self._tick_count = 0
+        self._tick_failures = 0
         self._status_color = ""
         self._hover_guard_active = False
         self._dragging = False
         self._drag_offset = (0, 0)
         self._speedtest_summary = ""
-        self.tray: Any = None
+        self.tray: TrayController | None = None
 
         self._speedtest_running = False
         self._speedtest_next_due = self._compute_next_speedtest_due()
@@ -204,8 +184,8 @@ class NetSpeedWidget:
         self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         startup(APP_NAME)
-        info(
-            f"[APP] Initialized at x={self.win_x} y={self.win_y} "
+        _log.info(
+            f"initialized at x={self.win_x} y={self.win_y} "
             f"size={self.win_width}x{self.win_height} opacity={self.opacity:.2f}"
         )
 
@@ -223,12 +203,25 @@ class NetSpeedWidget:
         except tk.TclError:
             pass  # documented contract: unsupported on some platforms
         self.root.title(APP_NAME)
+        self._apply_icon()
         self.root.configure(bg=TRANSPARENT)
         try:
             self.root.attributes("-transparentcolor", TRANSPARENT)
             self._rounded = True
         except tk.TclError:
-            warn("[APP] Transparency key unsupported; using flat background")
+            _log.warning("transparency key unsupported; using flat background")
+
+    def _apply_icon(self) -> None:
+        """Set the window icon, falling back to the default when unusable.
+
+        The icon is decoration, so a missing or unreadable file must not
+        stop the widget from starting. The tray already treats the same file
+        as optional.
+        """
+        try:
+            self.root.iconbitmap(str(icon_path()))
+        except tk.TclError as err:
+            _log.warning(f"window icon unavailable, using the default: {err}")
 
     def _build_ui(self) -> None:
         """Draw the pill, texts and graph slots on a single canvas."""
@@ -250,7 +243,7 @@ class NetSpeedWidget:
         self.canvas.pack(fill="both", expand=True)
 
         if self._rounded:
-            self._pill = _rounded_rect(
+            self._pill = rounded_rect(
                 self.canvas,
                 1,
                 1,
@@ -266,12 +259,12 @@ class NetSpeedWidget:
                 0, 0, PILL_W, PILL_H, fill=SURFACE, outline=BORDER, width=1
             )
 
-        cy = PILL_H / 2
+        center_y = PILL_H / 2
         self._dot_item = self.canvas.create_oval(
             DOT_X - DOT_R,
-            cy - DOT_R,
+            center_y - DOT_R,
             DOT_X + DOT_R,
-            cy + DOT_R,
+            center_y + DOT_R,
             fill=FG_DIM,
             outline="",
         )
@@ -352,14 +345,22 @@ class NetSpeedWidget:
             anchor="w",
         )
 
+        self._graph = TrafficGraph(
+            canvas=self.canvas,
+            x0=GRAPH_X0,
+            width=GRAPH_W,
+            top=GRAPH_TOP,
+            bottom=GRAPH_BOTTOM,
+            capacity=GRAPH_SAMPLES,
+        )
         self.menu = self._build_menu()
 
     def _place_window(self) -> None:
         """Size the window, then restore the saved or default position.
 
         A saved position that no longer sits on any connected monitor is
-        discarded, so the widget never ends up invisible on a screen
-        that has been detached or disabled.
+        discarded, so the widget never ends up invisible on a screen that
+        has been detached or disabled.
         """
         self.win_width = PILL_W
         self.win_height = PILL_H
@@ -367,12 +368,9 @@ class NetSpeedWidget:
         if position is None:
             position = self._default_position()
         elif not self._window_on_active_monitor(*position):
-            warn(
-                "[APP] Saved position is off all active monitors; "
-                "moving to the primary screen"
-            )
+            _log.warning("saved position is off all active monitors; using the primary")
             position = self._default_position()
-            config_set_position(*position)
+            set_position(*position)
         self.win_x, self.win_y = position
         self.root.geometry(
             f"{self.win_width}x{self.win_height}+{self.win_x}+{self.win_y}"
@@ -380,35 +378,13 @@ class NetSpeedWidget:
         self.root.deiconify()
 
     def _default_position(self) -> tuple[int, int]:
-        """Bottom-right corner of the primary monitor work area.
-
-        The work area, not the full monitor rect, so the pill clears the
-        taskbar. MONITOR_DEFAULTTONEAREST keeps the handle resolvable when
-        (0, 0) falls in a gap between monitors, so the only failure left is
-        a display that answers no query at all, where a visible top-left
-        beats a confident guess at a rect we could not read.
-        """
-        try:
-            monitor = win32api.MonitorFromPoint(
-                (0, 0), win32con.MONITOR_DEFAULTTONEAREST
-            )
-            _, _, right, bottom = win32api.GetMonitorInfo(monitor)["Work"]
-        except Exception as err:
-            warn(f"[APP] Could not resolve primary monitor: {err}")
-            return (100, 100)
-        return (
-            right - self.win_width - CORNER_MARGIN,
-            bottom - self.win_height - CORNER_MARGIN,
-        )
+        """Bottom-right corner of the primary monitor work area."""
+        width, height = self.win_width, self.win_height
+        return monitors.default_position(width, height, CORNER_MARGIN)
 
     def _window_on_active_monitor(self, x: int, y: int) -> bool:
         """True when the window center is inside any connected monitor."""
-        rects = _active_monitor_rects()
-        if not rects:
-            return True  # cannot verify, assume visible
-        cx = x + self.win_width // 2
-        cy = y + self.win_height // 2
-        return any(l <= cx < r and t <= cy < b for l, t, r, b in rects)
+        return monitors.point_on_active_monitor(x, y, self.win_width, self.win_height)
 
     def _ensure_visible(self) -> None:
         """Snap back to the primary screen if stranded off-monitor.
@@ -420,17 +396,17 @@ class NetSpeedWidget:
             return
         if self._window_on_active_monitor(self.win_x, self.win_y):
             return
-        info("[APP] Display layout changed; repositioning to primary screen")
+        _log.info("display layout changed; repositioning to the primary screen")
         self.win_x, self.win_y = self._default_position()
         self.root.geometry(f"+{self.win_x}+{self.win_y}")
-        config_set_position(self.win_x, self.win_y)
+        set_position(self.win_x, self.win_y)
 
     def reset_position(self) -> None:
         """Move the widget back to the default corner and persist it."""
         self.win_x, self.win_y = self._default_position()
         self.root.geometry(f"+{self.win_x}+{self.win_y}")
-        config_set_position(self.win_x, self.win_y)
-        info("[APP] Position reset to default corner")
+        set_position(self.win_x, self.win_y)
+        _log.info("position reset to the default corner")
 
     # ---------- Input ----------
 
@@ -457,10 +433,22 @@ class NetSpeedWidget:
         self.win_y = event.y_root - self._drag_offset[1]
         self.root.geometry(f"+{self.win_x}+{self.win_y}")
 
-    def _end_drag(self, _event: tk.Event) -> None:
+    def _end_drag(self, _event: Any = None) -> None:
         """Persist the dropped position."""
         self._dragging = False
-        config_set_position(self.win_x, self.win_y)
+        set_position(self.win_x, self.win_y)
+
+    def _heal_stuck_drag(self) -> None:
+        """Close a drag whose release event was taken by the context menu.
+
+        Posting the Tk menu grabs mouse capture, so a right-click pressed
+        before the left button comes up swallows `<ButtonRelease-1>` and
+        `_dragging` would stay set for the rest of the run, disabling the
+        off-monitor rescue along with it.
+        """
+        if self._dragging and not _mouse_button_held():
+            _log.warning("drag release never arrived; ending the stuck drag")
+            self._end_drag()
 
     def _build_menu(self) -> tk.Menu:
         """Create the right-click context menu."""
@@ -494,7 +482,7 @@ class NetSpeedWidget:
             activeforeground=FG,
             font=(FONT_FAMILY, 9),
         )
-        for level in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
+        for level in OPACITY_LEVELS:
             opacity_menu.add_command(
                 label=f"{int(level * 100)}%",
                 command=lambda lvl=level: self.set_opacity(lvl),
@@ -536,14 +524,14 @@ class NetSpeedWidget:
 
     def _toggle_hover_hide(self) -> None:
         """Persist the auto-hide checkbox state."""
-        config_set_hide_on_hover(self._hover_var.get())
+        set_hide_on_hover(self._hover_var.get())
 
     def toggle_hover_hide(self) -> None:
         """Flip the auto-hide setting. Called from the tray menu."""
         enabled = not get_hide_on_hover()
-        config_set_hide_on_hover(enabled)
+        set_hide_on_hover(enabled)
         self._hover_var.set(enabled)
-        info(f"[APP] Auto-hide on hover: {enabled}")
+        _log.info(f"auto-hide on hover: {enabled}")
 
     # ---------- Tick loop and rendering ----------
 
@@ -557,6 +545,7 @@ class NetSpeedWidget:
         if not self._run:
             return
         try:
+            self._heal_stuck_drag()
             sample = self.sampler.latest
             if sample is not None and sample.ts != self._last_sample_ts:
                 self._last_sample_ts = sample.ts
@@ -567,10 +556,23 @@ class NetSpeedWidget:
                 self._push_tray_status()
             if self._tick_count % MONITOR_CHECK_TICKS == 0:
                 self._ensure_visible()
-        except Exception as err:
-            warn(f"[APP] UI tick failed: {err}")
+        except Exception as err:  # noqa: BLE001 - a render failure must not stick
+            self._report_tick_failure(err)
         finally:
             self.root.after(UI_TICK_MS, self._tick)
+
+    def _report_tick_failure(self, err: Exception) -> None:
+        """Log a failing render once, then every TICK_REPORT_EVERY repeats.
+
+        A render that fails every tick would otherwise write four lines a
+        second to a file that is also the app's only diagnostic surface.
+        """
+        self._tick_failures += 1
+        if self._tick_failures == 1 or self._tick_failures % TICK_REPORT_EVERY == 0:
+            _log.error(
+                f"UI tick failed {self._tick_failures} times in a row: {err}\n"
+                f"{traceback.format_exc(limit=3)}"
+            )
 
     def _render_sample(self, sample: NetSample) -> None:
         """Update texts, peak logging and the graph for one sample."""
@@ -581,69 +583,12 @@ class NetSpeedWidget:
 
         if sample.up_mbps > self._max_up_seen and sample.up_mbps >= 1.0:
             self._max_up_seen = sample.up_mbps
-            info(f"[NET] New upstream peak {sample.up_mbps:.2f} Mb/s")
+            _net_log.info(f"new upstream peak {sample.up_mbps:.2f} Mb/s")
         if sample.down_mbps > self._max_down_seen and sample.down_mbps >= 1.0:
             self._max_down_seen = sample.down_mbps
-            info(f"[NET] New downstream peak {sample.down_mbps:.2f} Mb/s")
+            _net_log.info(f"new downstream peak {sample.down_mbps:.2f} Mb/s")
 
-        self._draw_graph()
-
-    def _draw_graph(self) -> None:
-        """Redraw the rolling traffic graph inside its canvas slot."""
-        canvas = self.canvas
-        canvas.delete("graph")
-
-        samples = self.sampler.history
-        if len(samples) < 2:
-            return
-
-        down_peak = max(s.down_mbps for s in samples)
-        up_peak = max(s.up_mbps for s in samples)
-        peak = max(down_peak, up_peak, 1.0)
-        if peak > self._graph_scale:
-            self._graph_scale = peak
-        else:
-            self._graph_scale = max(peak, self._graph_scale * 0.97)
-
-        x0 = GRAPH_X0
-        width = GRAPH_W
-        y_base = GRAPH_BOTTOM
-        g_h = GRAPH_BOTTOM - GRAPH_TOP
-        step = width / (GRAPH_SAMPLES - 1)
-        start_x = x0 + width - (len(samples) - 1) * step
-
-        def to_y(value: float) -> float:
-            return y_base - (value / self._graph_scale) * (g_h - 2)
-
-        canvas.create_line(
-            x0,
-            y_base + 0.5,
-            x0 + width,
-            y_base + 0.5,
-            fill=BORDER,
-            tags="graph",
-        )
-
-        down_points: list[float] = []
-        up_points: list[float] = []
-        for i, sample in enumerate(samples):
-            x = start_x + i * step
-            down_points.extend((x, to_y(sample.down_mbps)))
-            up_points.extend((x, to_y(sample.up_mbps)))
-
-        end_x = start_x + (len(samples) - 1) * step
-        canvas.create_polygon(
-            start_x,
-            y_base,
-            *down_points,
-            end_x,
-            y_base,
-            fill=DOWN_FILL,
-            outline="",
-            tags="graph",
-        )
-        canvas.create_line(*down_points, fill=DOWN_COLOR, width=2, tags="graph")
-        canvas.create_line(*up_points, fill=UP_COLOR, width=1, tags="graph")
+        self._graph.draw(self.sampler.history)
 
     def _render_latency(self) -> None:
         """Refresh the latency text and status dot."""
@@ -676,7 +621,8 @@ class NetSpeedWidget:
 
     def _push_tray_status(self) -> None:
         """Update the tray tooltip with current speeds and latency."""
-        if self.tray is None:
+        tray = self.tray
+        if tray is None:
             return
         result = self.probe.latest
         if not result.ok:
@@ -685,7 +631,7 @@ class NetSpeedWidget:
             ping_text = "-- ms"
         else:
             ping_text = f"{result.ms:.0f} ms"
-        self.tray.update_live_status(
+        tray.update_live_status(
             f"D {format_speed(self._smooth_down)} Mb/s | "
             f"U {format_speed(self._smooth_up)} Mb/s | {ping_text}"
         )
@@ -693,12 +639,17 @@ class NetSpeedWidget:
     # ---------- Hover ----------
 
     def _on_mouse_enter(self, _event: Any = None) -> None:
-        """Highlight the pill border; hide on hover if enabled."""
+        """Highlight the pill border; hide on hover if enabled.
+
+        A drag in progress is never interrupted by hiding, because the
+        withdraw would break the mouse grab the drag depends on.
+        """
         self.canvas.itemconfig(self._pill, outline=BORDER_HOVER)
-        if self._hover_guard_active or not get_hide_on_hover():
+        blocked = self._hover_guard_active or self._dragging
+        if blocked or not get_hide_on_hover():
             return
         self._hover_guard_active = True
-        info("[APP] Hover hide")
+        _log.info("hover hide")
         self.root.withdraw()
         self._poll_cursor_and_restore()
 
@@ -706,22 +657,47 @@ class NetSpeedWidget:
         """Restore the default pill border."""
         self.canvas.itemconfig(self._pill, outline=BORDER)
 
-    def _poll_cursor_and_restore(self) -> None:
-        """Restore the window once the cursor leaves its bounds."""
+    def _poll_cursor_and_restore(self, attempts: int = 0) -> None:
+        """Restore the window once the cursor leaves its bounds.
+
+        The guard is released before the restore is attempted: a failed
+        cursor query on a locked desktop would otherwise strand the flag,
+        killing auto-hide and the off-monitor rescue for the rest of the run.
+        """
         if not self._hover_guard_active:
             return
-        x, y = win32api.GetCursorPos()
-        inside = (
+        inside = self._cursor_inside_pill()
+        if inside and attempts < HOVER_POLL_LIMIT:
+            self.root.after(
+                HOVER_POLL_MS, lambda: self._poll_cursor_and_restore(attempts + 1)
+            )
+            return
+        if inside:
+            _log.warning(f"hover hide stuck after {attempts} polls; forcing restore")
+        self._hover_guard_active = False
+        self._restore_after_hover()
+
+    def _cursor_inside_pill(self) -> bool:
+        """Whether the physical cursor is over the pill, False when unsure."""
+        try:
+            x, y = win32api.GetCursorPos()
+        except Exception as err:  # noqa: BLE001 - a secure desktop blocks queries
+            _log.warning(f"cursor query failed during hover hide: {err}")
+            return False
+        return (
             self.win_x <= x <= self.win_x + self.win_width
             and self.win_y <= y <= self.win_y + self.win_height
         )
-        if inside:
-            self.root.after(120, self._poll_cursor_and_restore)
-        else:
-            info("[APP] Hover restore")
+
+    def _restore_after_hover(self) -> None:
+        """Bring the window back and drop the hover highlight."""
+        try:
             self.root.deiconify()
             self.canvas.itemconfig(self._pill, outline=BORDER)
-            self._hover_guard_active = False
+        except tk.TclError as err:
+            _log.warning(f"hover restore could not redraw the window: {err}")
+            return
+        _log.info("hover restore")
 
     # ---------- Lifecycle ----------
 
@@ -740,13 +716,15 @@ class NetSpeedWidget:
 
     def show_window(self) -> None:
         """Show the widget and keep it on top."""
-        info("[TRAY] Show window")
+        _log.info("show window")
+        self._hover_guard_active = False
         self.root.deiconify()
         self.root.attributes("-topmost", True)
 
     def hide_window(self) -> None:
         """Hide the widget."""
-        info("[TRAY] Hide window")
+        _log.info("hide window")
+        self._hover_guard_active = False
         self.root.withdraw()
 
     def toggle_window(self) -> None:
@@ -763,86 +741,54 @@ class NetSpeedWidget:
             dialog.lift()
             dialog.focus_force()
             return
-
-        top = tk.Toplevel(self.root)
-        self._hotkey_dialog = top
-        top.title("Set hotkey")
-        top.attributes("-topmost", True)
-        top.configure(bg=SURFACE, padx=16, pady=14)
-        top.resizable(False, False)
-        tk.Label(
-            top,
-            text="Press your new show/hide hotkey.",
-            font=(FONT_FAMILY, 9, "bold"),
-            fg=FG,
-            bg=SURFACE,
-        ).pack(anchor="w")
-        tk.Label(
-            top,
-            text="Must include Ctrl or Alt. Esc cancels.",
-            font=(FONT_FAMILY, 8),
-            fg=FG_DIM,
-            bg=SURFACE,
-        ).pack(anchor="w", pady=(4, 0))
-        status = tk.Label(
-            top,
-            text=f"Current: {format_hotkey(self._hotkey_combo)}",
-            font=(FONT_FAMILY, 8),
-            fg=FG_DIM,
-            bg=SURFACE,
+        self._hotkey_dialog = hotkey_dialog.show(
+            self.root, self._hotkey_combo, self._apply_hotkey
         )
-        status.pack(anchor="w", pady=(8, 0))
-        top.bind("<KeyPress>", lambda e: self._capture_hotkey(e, top, status))
-        top.focus_force()
 
-    def _capture_hotkey(
-        self, event: tk.Event, top: tk.Toplevel, status: tk.Label
-    ) -> None:
-        """Validate and register the combo pressed in the capture dialog."""
-        if event.keysym == "Escape":
-            top.destroy()
-            return
-        try:
-            combo = combo_from_tk_event(event)
-        except ValueError as err:
-            status.config(text=str(err), fg=BAD_COLOR)
-            return
-        if combo is None:
-            return  # modifier-only press, keep listening
+    def _apply_hotkey(self, combo: str) -> tuple[bool, str | None]:
+        """Register `combo` globally and keep config in step with the result.
 
+        Returns the outcome so the capture dialog can show it. A rejection
+        clears the active flag rather than leaving the menu claiming a
+        binding that the listener may have just dropped.
+        """
         ok, err = self.hotkey.apply_combo(combo)
         if not ok:
-            warn(f"[HOTKEY] '{combo}' rejected: {err}")
-            status.config(text=f"Unavailable: {err}", fg=BAD_COLOR)
-            return
-        config_set_hotkey(combo)
+            self._hotkey_ok = False
+            return False, err
+        set_hotkey(combo)
         self._hotkey_combo = combo
         self._hotkey_ok = True
-        info(f"[HOTKEY] Global hotkey set to {combo}")
-        status.config(text=f"Hotkey set: {format_hotkey(combo)}", fg=GOOD_COLOR)
-        top.after(700, top.destroy)
+        _log.info(f"global hotkey set to {combo}")
+        return True, None
 
     def set_opacity(self, value: float) -> None:
-        """Update the window opacity from any thread and persist it."""
+        """Update the window opacity from any thread and persist it.
+
+        Reached directly from the pystray thread, so the work is marshaled
+        through `ui_call`, which drops it once the window is gone instead
+        of raising into the tray callback.
+        """
         try:
-            target = max(0.40, min(1.00, float(value)))
+            target = clamp_opacity(value)
         except (TypeError, ValueError):
             return
+        self.ui_call(self._apply_opacity, target)
 
-        def _apply() -> None:
-            self.opacity = config_set_opacity(target)
-            self._apply_alpha()
-            info(f"[APP] Opacity set to {self.opacity:.2f}")
-
-        self.root.after(0, _apply)
+    def _apply_opacity(self, target: float) -> None:
+        """Apply an already-clamped opacity on the Tk thread."""
+        self.opacity = config_set_opacity(target)
+        self._apply_alpha()
+        _log.info(f"opacity set to {self.opacity:.2f}")
 
     def _apply_alpha(self) -> None:
+        """Set the window alpha, ignoring platforms that lack it."""
         try:
             self.root.attributes("-alpha", self.opacity)
         except tk.TclError:
             pass  # documented contract: alpha unsupported on some systems
 
-    def attach_tray(self, tray: Any) -> None:
+    def attach_tray(self, tray: TrayController) -> None:
         """Attach the tray controller and push the current summary."""
         self.tray = tray
         self.tray.update_speedtest_summary(self._speedtest_summary)
@@ -878,35 +824,63 @@ class NetSpeedWidget:
         if self.tray is not None:
             self.tray.start_speedtest_check()
 
-        threading.Thread(
-            target=self._speedtest_worker, name="speedtest-worker", daemon=True
-        ).start()
+        try:
+            threading.Thread(
+                target=self._speedtest_worker, name="speedtest-worker", daemon=True
+            ).start()
+        except OSError as err:
+            # Without the worker there is no finally to unwind the latch, so
+            # clear it here or no later speedtest could ever start.
+            _log.error(f"could not start the speedtest worker: {err}")
+            self._reset_speedtest_run()
+
+    def _reset_speedtest_run(self) -> None:
+        """Clear the running latch and the tray busy marker."""
+        self._speedtest_running = False
+        if self.tray is not None:
+            self.tray.stop_speedtest_check()
 
     def _speedtest_worker(self) -> None:
-        """Measure, persist and publish one speedtest result."""
+        """Measure, persist and publish one speedtest result.
+
+        Only a real measurement is stored. The passive estimate describes
+        incidental traffic, so showing it as the last speedtest or letting
+        it set the next due time would present an unmeasured link as known.
+        The latch is cleared in `finally` because a raise on any publish path
+        would otherwise stop every later run.
+        """
+        retry_after = SPEEDTEST_RETRY_SEC
         try:
             result = measure_speed()
-            saved = config_set_speedtest(result.down_mbps, result.up_mbps)
+            if result.measured:
+                saved = set_speedtest(result.down_mbps, result.up_mbps)
+                value = f"{saved['down_mbps']:.1f} D | {saved['up_mbps']:.1f} U"
+                retry_after = SPEEDTEST_INTERVAL_SEC
+            else:
+                value = f"{result.down_mbps:.1f} D | {result.up_mbps:.1f} U"
+                retry_after = SPEEDTEST_RETRY_SEC
+
+            label = "Speedtest" if result.measured else "Speedtest estimate"
             self.ui_call(
                 self._apply_speedtest_result,
                 result.down_mbps,
                 result.up_mbps,
+                result.measured,
             )
-            info(
-                f"[SPEEDTEST] Result: down={result.down_mbps:.2f} Mb/s, "
-                f"up={result.up_mbps:.2f} Mb/s"
-            )
-            self._notify_tray(
-                f"Speedtest: {saved['down_mbps']:.1f} D | {saved['up_mbps']:.1f} U Mb/s"
-            )
-        except Exception as err:
-            warn(f"[SPEEDTEST] run failed: {err}")
+            _log.info(f"{label}: {value} Mb/s, source={result.source}")
+            self._notify_tray(f"{label}: {value}")
+        except Exception as err:  # noqa: BLE001 - a failed run must not stop the app
+            _log.error(f"speedtest run failed: {err}")
             self._notify_tray("Speedtest: failed")
         finally:
-            self._speedtest_running = False
-            self._speedtest_next_due = time.time() + SPEEDTEST_INTERVAL_SEC
-            if self.tray is not None:
-                self.tray.stop_speedtest_check()
+            self._finish_speed_run(retry_after)
+
+    def _finish_speed_run(self, retry_after_sec: float) -> None:
+        """Clear the running latch and schedule the next automatic run."""
+        self._speedtest_running = False
+        self._speedtest_next_due = time.time() + retry_after_sec
+        if self.tray is not None:
+            self.tray.stop_speedtest_check()
 
     def _speedtest_scheduler_loop(self) -> None:
         """Trigger a scheduled run whenever the due time passes.
@@ -917,38 +891,38 @@ class NetSpeedWidget:
         check is only a cheap pre-filter.
         """
         while not self._stop_event.wait(5):
-            due = time.time() >= self._speedtest_next_due
-            if not self._speedtest_running and due:
-                self.ui_call(self.run_speedtest_now, manual=False)
+            if self._speedtest_running or time.time() < self._speedtest_next_due:
+                continue
+            self.ui_call(self.run_speedtest_now, manual=False)
 
     def _compute_next_speedtest_due(self) -> float:
-        """Compute the next epoch time for an automatic speedtest.
-
-        If a saved result exists, schedule one interval after it. If that
-        time already passed, or no result exists, apply the startup grace.
-        """
-        now = time.time()
-        speedtest = config_get_speedtest(None)
-        if speedtest and "ts" in speedtest:
-            due = float(speedtest["ts"]) + SPEEDTEST_INTERVAL_SEC
-            return due if due > now else now + SPEEDTEST_STARTUP_GRACE_SEC
-        return now + SPEEDTEST_STARTUP_GRACE_SEC
+        """Epoch time of the next automatic speedtest, from saved state."""
+        return next_speedtest_due(
+            get_speedtest(),
+            time.time(),
+            SPEEDTEST_INTERVAL_SEC,
+            SPEEDTEST_STARTUP_GRACE_SEC,
+        )
 
     def _load_saved_speedtest(self) -> None:
         """Reflect the saved speedtest in the menu and tray, if present."""
-        speedtest = config_get_speedtest(None)
-        if speedtest:
+        saved = get_speedtest()
+        if saved is not None:
             self._apply_speedtest_result(
-                float(speedtest["down_mbps"]), float(speedtest["up_mbps"])
+                saved["down_mbps"], saved["up_mbps"], measured=True
             )
 
-    def _apply_speedtest_result(self, down_mbps: float, up_mbps: float) -> None:
-        """Store and show the last speedtest result."""
+    def _apply_speedtest_result(
+        self, down_mbps: float, up_mbps: float, measured: bool = True
+    ) -> None:
+        """Show the last result on the second row, labelled by its kind."""
+        kind = "speedtest" if measured else "estimate"
         self._speedtest_summary = (
-            f"Last speedtest: {down_mbps:.1f} D | {up_mbps:.1f} U Mb/s"
+            f"Last {kind}: {down_mbps:.1f} D | {up_mbps:.1f} U Mb/s"
         )
         self.canvas.itemconfig(self._t_st_down, text=f"↓ {down_mbps:.1f}")
         self.canvas.itemconfig(self._t_st_up, text=f"↑ {up_mbps:.1f}")
+        self.canvas.itemconfig(self._t_st_unit, text=f"Mb/s {kind}")
 
     def _notify_tray(self, message: str) -> None:
         """Send a summary string to the tray, if attached."""
@@ -956,19 +930,25 @@ class NetSpeedWidget:
             self.tray.update_speedtest_summary(message)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Build the widget, attach the tray and run the Tk mainloop.
+
+    Raises:
+        SystemExit: 1 after reporting any startup failure, because a build
+            with no console would otherwise vanish without a trace.
+    """
     root = tk.Tk()
     try:
         app = NetSpeedWidget(root)
-
         tray = TrayController(app, APP_NAME)
         tray.start()
         app.attach_tray(tray)
-
         root.mainloop()
     except Exception as err:
-        # A noconsole build would otherwise exit silently before mainloop.
-        warn(f"[APP] Fatal startup error: {err}\n{traceback.format_exc()}")
+        _log.error(f"fatal startup error: {err}\n{traceback.format_exc()}")
         messagebox.showerror(APP_NAME, f"NetSpeed Widget failed to start:\n{err}")
-        root.destroy()
-        raise SystemExit(1)
+        raise SystemExit(1) from err
+
+
+if __name__ == "__main__":
+    main()

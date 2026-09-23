@@ -4,26 +4,19 @@
 # Match the Python version releases are built with (release.yml uses 3.11).
 target-version = "py311"
 
-# 88 characters matches the project convention (see ~/.agents/conventions/python.md).
+# 88 characters matches the project convention (~/.agents/conventions/python.md).
 line-length = 88
 
-# select is intentionally left unset so the project tracks Ruff's documented
-# default rule set (413 rules since v0.16). Add per-file-ignores only with a
-# comment that names the reason.
+[lint]
+# Ruff's default rule set already carries E, F, I, UP, B and S, so `select` is
+# left unset to track it. E501 is added deliberately: the formatter cannot
+# shorten a long string or comment, so without this rule a line can sit past
+# the limit while both gates stay green.
+extend-select = ["E501"]
 
-[lint.per-file-ignores]
-# Every entry below is a deliberate defensive boundary that logs or records the
-# error and must never crash the widget, so narrowing to specific exception
-# types is either unsafe or would require catching dozens of third-party types.
-# GUI monitor enumeration, the UI tick loop and the speedtest background
-# thread: each logs the failure and keeps the widget running instead of
-# freezing or crashing the Tk app.
-"app.py" = ["BLE001"]
-# Win32 window setup records its init error for later, and the hotkey callback
-# is isolated so a user-callback bug cannot kill the message pump.
-"utils/hotkeys.py" = ["BLE001"]
-# Logging is a best-effort contract: a failed write must never propagate.
-"utils/logger.py" = ["BLE001"]
-# The provider loop logs each backend failure and falls through to the next;
-# speedtest-cli and psutil can raise many unrelated exception types.
-"utils/speedtest.py" = ["BLE001"]
+# BLE001 (blind except) stays on everywhere, including app.py, hotkeys.py,
+# logger.py and speedtest.py. Those modules do catch broad Exception on
+# purpose, because each one is a boundary whose job is to record the failure
+# and keep the widget running, but a file-wide ignore would also hide any new
+# one added later. Each intentional handler carries its own `# noqa: BLE001`
+# with the reason, so the exception is reviewed at the line that needs it.
