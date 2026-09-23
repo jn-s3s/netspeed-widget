@@ -59,6 +59,39 @@ def set_opacity(value: float) -> float:
     return clamped
 
 
+def get_position() -> tuple[int, int] | None:
+    """Returns the saved window position, or None if never dragged."""
+    try:
+        position = load_config().get("position")
+        if isinstance(position, dict) and {"x", "y"} <= set(position.keys()):
+            return int(position["x"]), int(position["y"])
+        return None
+    except (TypeError, ValueError):
+        return None
+
+
+def set_position(x: int, y: int) -> None:
+    """Persists the window position."""
+    config = load_config()
+    config["position"] = {"x": int(x), "y": int(y)}
+    save_config(config)
+
+
+def get_hide_on_hover(default: bool = False) -> bool:
+    """Returns whether the widget hides when the cursor enters it."""
+    try:
+        return bool(load_config().get("hide_on_hover", default))
+    except Exception:
+        return default
+
+
+def set_hide_on_hover(value: bool) -> None:
+    """Persists the auto-hide on hover preference."""
+    config = load_config()
+    config["hide_on_hover"] = bool(value)
+    save_config(config)
+
+
 def get_speedtest(default: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
     """
     Returns the last saved speedtest dict or default.
@@ -87,3 +120,18 @@ def set_speedtest(down_mbps: float, up_mbps: float, ts: float | None = None) -> 
     config["speedtest"] = payload
     save_config(config)
     return payload
+
+def get_hotkey(default: str = "ctrl+shift+alt+n") -> str:
+    """Returns the global show/hide hotkey combo string."""
+    try:
+        value = load_config().get("hotkey", default)
+        return value if isinstance(value, str) and value else default
+    except Exception:
+        return default
+
+
+def set_hotkey(combo: str) -> None:
+    """Persists the global show/hide hotkey combo string."""
+    config = load_config()
+    config["hotkey"] = combo
+    save_config(config)
