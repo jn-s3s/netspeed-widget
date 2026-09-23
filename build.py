@@ -19,6 +19,10 @@ FAST_BUNDLE = TP / "fast-bundle"
 FAST_PACKAGE_JSON = FAST_BUNDLE / "package.json"
 FAST_CLI_VERSION = os.environ.get("FAST_CLI_VERSION", "latest")
 
+# Release workflows pass APP_VERSION (the git tag); local builds stay unversioned.
+APP_VERSION = os.environ.get("APP_VERSION", "").strip().lstrip("v")
+EXE_NAME = f"NetSpeedWidget-{APP_VERSION}" if APP_VERSION else "NetSpeedWidget"
+
 
 def main() -> None:
     """
@@ -36,7 +40,7 @@ def main() -> None:
     )
 
     # 3. Run PyInstaller to create the EXE
-    print("⚙️ Building NetSpeedWidget.exe...")
+    print(f"⚙️ Building {EXE_NAME}.exe...")
     command = [
         sys.executable,
         "-m",
@@ -49,7 +53,7 @@ def main() -> None:
         "--add-data",
         "icon.ico;.",  # Include icon resource in bundle
         "--name",
-        "NetSpeedWidget",  # Set application name
+        EXE_NAME,  # Set application name (versioned on release builds)
         "app.py",  # Entry point
         "--add-binary",
         f"{NODE_DEST};third_party/node",  # Binary for node.exe

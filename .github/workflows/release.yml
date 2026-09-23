@@ -39,7 +39,7 @@ jobs:
               id: build-cache
               with:
                   path: dist
-                  key: build-dist-${{ runner.os }}-${{ hashFiles('*.py', 'utils/**/*.py', 'tray/**/*.py', 'icon.ico', 'requirements.txt') }}
+                  key: build-dist-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('*.py', 'utils/**/*.py', 'tray/**/*.py', 'icon.ico', 'requirements.txt') }}
                   restore-keys: |
                       build-dist-${{ runner.os }}-
 
@@ -51,6 +51,8 @@ jobs:
             - name: Run Build Script
               if: steps.build-cache.outputs.cache-hit != 'true'
               run: python build.py
+              env:
+                  APP_VERSION: ${{ github.ref_name }}
 
             - name: Check build output
               run: dir dist

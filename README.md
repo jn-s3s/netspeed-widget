@@ -12,9 +12,6 @@ A tiny always-on-top widget for Windows that shows your live network speed, ping
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 
-
-<!-- INSERT IMAGE HERE -->
-
 ## What it shows
 
 - Live download and upload speed, in Mb/s.
@@ -47,8 +44,6 @@ An automatic speedtest runs every 4 hours so the number you see is never stale.
 
 ## Performance
 
-The old version updated from a worker thread, spawned a `ping.exe` every second and redrew the whole graph each tick. This rewrite fixes that:
-
 - All UI work happens on the Tk main thread, polling background samplers every 250 ms.
 - Throughput is read from psutil counters, and latency comes from a lightweight TCP connect. No per-second subprocesses.
 - The heavy speedtest library loads lazily, only when a test actually runs, so startup stays instant.
@@ -64,10 +59,10 @@ python -m venv .venv
 ## Build the standalone app
 
 ```powershell
-.\build.ps1
+.venv\Scripts\python build.py
 ```
 
-This produces a single folder under `dist/` with the exe, the icon, the bundled Node runtime and fast-cli. Double-click the exe and the widget appears.
+The build machine needs Node.js and npm so the script can vendor node.exe and fast-cli. The output is a single `dist/NetSpeedWidget.exe` with the icon, the Node runtime and fast-cli embedded. Release builds set the `APP_VERSION` environment variable (CI passes the git tag), so release artifacts are named `dist/NetSpeedWidget-<version>.exe`. Double-click the exe and the widget appears.
 
 ## Development
 
@@ -96,24 +91,31 @@ Or call the tools directly:
 
 ## Project layout
 
-- `app.py` - the widget itself: window, labels, graph, menus, hotkeys.
+- `app.py` - the widget itself: window, labels, graph and menus.
 - `utils/sampler.py` - reads network counters once a second and keeps history.
 - `utils/latency.py` - probes latency in the background.
+- `utils/hotkeys.py` - registers the global show/hide hotkey and listens for it.
 - `utils/speedtest.py` - the speedtest provider chain.
 - `utils/config.py` - small persistent settings in `%APPDATA%\NetSpeedWidget\config.json`.
 - `utils/paths.py` - resolves resource paths for source runs and PyInstaller builds.
-- `utils/logger.py` - timestamped logging to console and a log file.
+- `utils/logger.py` - timestamped logging to a log file at `%APPDATA%\NetSpeedWidget\log.txt`.
 - `tray/container.py` - the system tray icon and menu.
-- `build.ps1` and `build.py` - packaging helpers.
-
----
+- `build.py` and `clean.py` - packaging helpers.
+- `lint.ps1` - runs the Ruff lint and format checks.
 
 ## Tech stack
 
+- Python 3.11, with Tkinter (the standard library GUI toolkit) for the widget UI.
+- pystray and Pillow for the tray icon, pywin32 for the global hotkey and Win32 integration.
+- psutil for network counters, speedtest-cli as one of the speedtest providers.
+- A bundled Node.js runtime with fast-cli as the primary speedtest provider.
+- PyInstaller builds the exe, Ruff lints and formats, GitHub Actions runs CI and releases.
+
+---
+
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and conventions. Please follow Conventional Commits and make sure `pnpm typecheck` passes before opening a pull request.
-
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and conventions, and make sure `.\lint.ps1` (or `ruff check .` and `ruff format --check .`) passes before opening a pull request.
 
 ## Security
 
