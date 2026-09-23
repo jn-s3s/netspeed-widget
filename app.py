@@ -49,7 +49,7 @@ from utils.logger import info, section, startup, warn
 from utils.sampler import NetSample, NetSampler
 from utils.speedtest import measure_speed
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.0.0"
 APP_NAME = f"NetSpeed Widget v{APP_VERSION} by jn-s3s"
 
 # Theme
@@ -852,7 +852,11 @@ class NetSpeedWidget:
     # ---------- Speedtest ----------
 
     def run_speedtest_now(self, manual: bool = True) -> None:
-        """Launch a speedtest on a worker thread. No-op if one runs."""
+        """Launch a speedtest on a worker thread. No-op if one runs.
+
+        Must run on the Tk thread (directly or via ui_call) so the
+        running-flag check-then-set stays serialized across triggers.
+        """
         if self._speedtest_running:
             return
         self._speedtest_running = True
@@ -892,11 +896,17 @@ class NetSpeedWidget:
                 self.tray.stop_speedtest_check()
 
     def _speedtest_scheduler_loop(self) -> None:
-        """Trigger a scheduled run whenever the due time passes."""
+        """Trigger a scheduled run whenever the due time passes.
+
+        The launch is marshaled to the Tk thread so the running-flag
+        check-then-set in run_speedtest_now serializes with the manual
+        triggers from the menu, double-click and tray. The local flag
+        check is only a cheap pre-filter.
+        """
         while not self._stop_event.wait(5):
             due = time.time() >= self._speedtest_next_due
             if not self._speedtest_running and due:
-                self.run_speedtest_now(manual=False)
+                self.ui_call(self.run_speedtest_now, manual=False)
 
     def _compute_next_speedtest_due(self) -> float:
         """Compute the next epoch time for an automatic speedtest.
