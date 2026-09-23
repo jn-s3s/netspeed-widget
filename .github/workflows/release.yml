@@ -40,7 +40,7 @@ jobs:
               id: build-cache
               with:
                   path: dist
-                  key: build-dist-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('*.py', 'utils/**/*.py', 'tray/**/*.py', 'icon.ico', 'requirements.txt') }}
+                  key: build-dist-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('*.py', 'utils/**/*.py', 'tray/**/*.py', 'icon.ico', 'requirements.txt', 'third_party/fast-bundle/package.json', 'third_party/fast-bundle/package-lock.json') }}
                   restore-keys: |
                       build-dist-${{ runner.os }}-
 
@@ -116,13 +116,41 @@ jobs:
                   NEW_TAG: ${{ github.ref_name }}
                   REPO: ${{ github.repository }}
 
+            - name: Package Windows x64 release
+              id: archive
+              shell: pwsh
+              run: |
+                  # The package is named after the directory build.py produced.
+                  # Re-deriving it from the tag here would put a second copy of
+                  # that name in the release path, where the two can drift.
+                  $packages = @(Get-ChildItem -LiteralPath "dist" -Directory)
+                  if ($packages.Count -ne 1) {
+                      throw "Expected exactly one package directory in dist, found $($packages.Count)"
+                  }
+                  $package = $packages[0]
+                  $executable = Join-Path $package.FullName "$($package.Name).exe"
+                  if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+                      throw "Release executable not found: $executable"
+                  }
+
+                  $archiveName = "$($package.Name)-windows-x64.zip"
+                  $archive = Join-Path "dist" $archiveName
+                  # Compress-Archive walks the ~10k file tree slower than
+                  # ZipFile::CreateFromDirectory, and stays because its output is
+                  # what this workflow's packaging has been checked against.
+                  Compress-Archive -LiteralPath $package.FullName -DestinationPath $archive -Force
+
+                  # Only the file name crosses into the upload step, which owns
+                  # the dist/ prefix, so no separator has to survive the handoff.
+                  Add-Content -Path $env:GITHUB_OUTPUT -Value "archive_name=$archiveName"
+
             - name: Upload GitHub Release
               uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
               with:
                   tag_name: ${{ github.ref_name }}
                   name: NetSpeed Widget ${{ github.ref_name }}
                   body_path: RELEASE.md
-                  files: dist/*.exe
+                  files: dist/${{ steps.archive.outputs.archive_name }}
                   draft: true
                   fail_on_unmatched_files: true
               env:

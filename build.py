@@ -1,12 +1,12 @@
-"""Package NetSpeed Widget into a standalone Windows executable.
+"""Package NetSpeed Widget into a standalone Windows application directory.
 
 Vendoring happens first: a real node.exe is copied in and the fast-cli npm
 bundle is installed from the committed lockfile, so the speedtest backend
-inside the exe is the same tree every build gets. PyInstaller then bundles
-the app, the runtime and the bundle into one file.
+in the package is the same tree every build gets. PyInstaller then bundles
+the app, the runtime and the bundle into an onedir distribution.
 
 Run as `python build.py`. Set APP_VERSION to the release tag, as the release
-workflow does, to name the artifact after its version.
+workflow does, to name the package directory after its version.
 """
 
 import io
@@ -45,7 +45,7 @@ FAST_CLI_VERSION = os.environ.get("FAST_CLI_VERSION", "5.2.0").strip()
 # Release workflows pass APP_VERSION (the git tag); local builds stay
 # unversioned.
 RELEASE_TAG = os.environ.get("APP_VERSION", "").strip().lstrip("v")
-EXE_NAME = f"NetSpeedWidget-{RELEASE_TAG}" if RELEASE_TAG else "NetSpeedWidget"
+PACKAGE_NAME = f"NetSpeedWidget-{RELEASE_TAG}" if RELEASE_TAG else "NetSpeedWidget"
 
 
 def check_release_version() -> None:
@@ -63,7 +63,7 @@ def check_release_version() -> None:
 
 
 def main() -> None:
-    """Build the standalone exe, aborting non-zero on any failed step."""
+    """Build the standalone app directory, aborting on any failed step."""
     check_release_version()
 
     clean.run()
@@ -73,12 +73,12 @@ def main() -> None:
         [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True
     )
 
-    print(f"⚙️ Building {EXE_NAME}.exe...")
+    print(f"⚙️ Building {PACKAGE_NAME}...")
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
-        "--onefile",  # Bundle into a single EXE
+        "--onedir",  # Bundle into a directory
         "--noconsole",  # Hide console window
         "--noconfirm",  # Overwrite existing build
         "--icon",
@@ -86,7 +86,7 @@ def main() -> None:
         "--add-data",
         "icon.ico;.",  # Include icon resource in bundle
         "--name",
-        EXE_NAME,  # Set application name (versioned on release builds)
+        PACKAGE_NAME,  # Set application name (versioned on release builds)
         "app.py",  # Entry point
         "--add-binary",
         f"{NODE_DEST};{THIRD_PARTY}/{NODE_DIR}",  # Binary for node.exe
@@ -103,7 +103,7 @@ def main() -> None:
         print("✅ Build successful!")
     except subprocess.CalledProcessError as err:
         # Non-zero exit so the release workflow aborts rather than publishing
-        # whatever exe an earlier run left in dist.
+        # whatever output an earlier run left in dist.
         print("❌ Build failed:", err)
         raise SystemExit(1) from err
 
@@ -127,7 +127,7 @@ def ensure_node_runtime() -> None:
 def ensure_fast_bundle() -> None:
     """Install fast-cli inside third_party/fast-bundle from the lockfile.
 
-    Users need no Node at runtime: the exe ships node.exe plus this bundle.
+    Users need no Node at runtime: the package ships node.exe plus this bundle.
 
     Raises:
         RuntimeError: npm is missing, the lockfile is absent, or the install
