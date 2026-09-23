@@ -28,11 +28,12 @@ jobs:
               with:
                   python-version: "3.11"
 
-            - name: Lint and format check
+            - name: Lint, format and test
               run: |
-                  python -m pip install -r requirements-dev.txt
+                  python -m pip install -r requirements.txt -r requirements-dev.txt
                   ruff check .
                   ruff format --check .
+                  python -m pytest tests -q
 
             - name: Restore build cache
               uses: actions/cache@v6

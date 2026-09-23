@@ -69,6 +69,7 @@ The build machine needs Node.js and npm so the script can vendor node.exe and fa
 Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Install the dev tools once:
 
 ```powershell
+.venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\pip install -r requirements-dev.txt
 ```
 
@@ -89,6 +90,14 @@ Or call the tools directly:
 
 `ruff check .` and `ruff format --check .` must both exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
 
+The test suite under `tests/` uses pytest and covers hotkey parsing, speedtest JSON parsing, sampler rate math (including counter-reset and zero-elapsed edge cases) and display formatting. Run it locally:
+
+```powershell
+.venv\Scripts\python -m pytest tests -q
+```
+
+CI runs the same command on every push and pull request, and again before every release build.
+
 ## Project layout
 
 - `app.py` - the widget itself: window, labels, graph and menus.
@@ -102,6 +111,8 @@ Or call the tools directly:
 - `tray/container.py` - the system tray icon and menu.
 - `build.py` and `clean.py` - packaging helpers.
 - `lint.ps1` - runs the Ruff lint and format checks.
+- `tests/` - pytest unit tests for hotkeys, speedtest parsing, sampler math and formatting.
+- `conftest.py` - makes the repo root importable for the test suite.
 
 ## Tech stack
 

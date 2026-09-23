@@ -21,6 +21,7 @@ python -m venv .venv
 ## Before opening a pull request
 
 - Run `.\lint.ps1` (or `ruff check .` and `ruff format --check .`). Both must exit clean; CI enforces this on every push and pull request.
+- Run the test suite (`python -m pytest tests -q`). CI enforces this on every push and pull request; the suite covers hotkey parsing, speedtest JSON parsing, sampler rate math and display formatting without needing a display.
 - Follow [Conventional Commits](https://www.conventionalcommits.org/): `<type>(<scope>): <summary>` with a lowercase imperative summary under 69 characters.
 - Keep each pull request focused on one concern.
 - By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
