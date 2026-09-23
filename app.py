@@ -12,11 +12,14 @@ screen that is no longer attached.
 import threading
 import time
 import tkinter as tk
+import traceback
 from collections.abc import Callable
 from tkinter import font as tkfont
+from tkinter import messagebox
 from typing import Any
 
 import win32api
+import win32con
 
 from tray.container import TrayController
 from utils.config import (
@@ -125,7 +128,12 @@ def _rounded_rect(
 
 
 def _active_monitor_rects() -> list[tuple[int, int, int, int]]:
-    """Return (left, top, right, bottom) for every connected monitor."""
+    """Return (left, top, right, bottom) for every connected monitor.
+
+    These are full monitor rects, taskbar included, so they suit visibility
+    tests only. Anything that places the window needs the work area from
+    `GetMonitorInfo(...)["Work"]` instead.
+    """
     try:
         return [tuple(rect) for _, _, rect in win32api.EnumDisplayMonitors()]
     except Exception as err:
@@ -372,9 +380,22 @@ class NetSpeedWidget:
         self.root.deiconify()
 
     def _default_position(self) -> tuple[int, int]:
-        """Bottom-right corner of the primary monitor work area."""
-        monitor = win32api.MonitorFromPoint((0, 0))
-        _, _, right, bottom = win32api.GetMonitorInfo(monitor)["Work"]
+        """Bottom-right corner of the primary monitor work area.
+
+        The work area, not the full monitor rect, so the pill clears the
+        taskbar. MONITOR_DEFAULTTONEAREST keeps the handle resolvable when
+        (0, 0) falls in a gap between monitors, so the only failure left is
+        a display that answers no query at all, where a visible top-left
+        beats a confident guess at a rect we could not read.
+        """
+        try:
+            monitor = win32api.MonitorFromPoint(
+                (0, 0), win32con.MONITOR_DEFAULTTONEAREST
+            )
+            _, _, right, bottom = win32api.GetMonitorInfo(monitor)["Work"]
+        except Exception as err:
+            warn(f"[APP] Could not resolve primary monitor: {err}")
+            return (100, 100)
         return (
             right - self.win_width - CORNER_MARGIN,
             bottom - self.win_height - CORNER_MARGIN,
@@ -937,10 +958,17 @@ class NetSpeedWidget:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = NetSpeedWidget(root)
+    try:
+        app = NetSpeedWidget(root)
 
-    tray = TrayController(app, APP_NAME)
-    tray.start()
-    app.attach_tray(tray)
+        tray = TrayController(app, APP_NAME)
+        tray.start()
+        app.attach_tray(tray)
 
-    root.mainloop()
+        root.mainloop()
+    except Exception as err:
+        # A noconsole build would otherwise exit silently before mainloop.
+        warn(f"[APP] Fatal startup error: {err}\n{traceback.format_exc()}")
+        messagebox.showerror(APP_NAME, f"NetSpeed Widget failed to start:\n{err}")
+        root.destroy()
+        raise SystemExit(1)
