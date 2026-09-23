@@ -826,7 +826,7 @@ class NetSpeedWidget:
         self.tray.update_speedtest_summary(self._speedtest_summary)
 
     def shutdown(self) -> None:
-        """Stop background services and destroy the window."""
+        """Stop background services and the tray, then destroy the window."""
         if not self._run:
             return
         section("App exit")
@@ -836,6 +836,8 @@ class NetSpeedWidget:
         self.sampler.stop()
         self.probe.stop()
         self.hotkey.stop()
+        if self.tray is not None:
+            self.tray.stop()
         self.root.destroy()
 
     # ---------- Speedtest ----------

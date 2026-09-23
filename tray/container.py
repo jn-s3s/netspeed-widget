@@ -73,9 +73,19 @@ class TrayController:
     def on_quit(self, *_: Any) -> None:
         """Stop the tray icon and shut the app down on the Tk thread."""
         info("[TRAY] Quit requested")
+        self.stop()
+        self.app.ui_call(self.app.shutdown)
+
+    def stop(self) -> None:
+        """Stop the tray icon once, removing it from the notification area.
+
+        Every quit path funnels through here so none can leave a ghost
+        icon or a live menu wired to a destroyed Tk root. Nulling the
+        icon also turns the refresh helpers into no-ops after shutdown.
+        """
         if self.icon is not None:
             self.icon.stop()
-        self.app.ui_call(self.app.shutdown)
+            self.icon = None
 
     def update_speedtest_summary(self, summary: str) -> None:
         """Set the speedtest line shown in the tooltip and menu."""
