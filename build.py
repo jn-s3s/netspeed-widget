@@ -1,11 +1,12 @@
+import io
+import json
+import os
+import shutil
 import subprocess
 import sys
-import io
-import clean
-import os
-import json
-import shutil
 from pathlib import Path
+
+import clean
 
 # Ensure stdout uses UTF-8 encoding for consistent emoji/log output
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -31,24 +32,33 @@ def main() -> None:
     # 2. Install required dependencies from requirements.txt
     print("📦 Installing requirements...")
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
-        check=True
+        [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True
     )
 
     # 3. Run PyInstaller to create the EXE
     print("⚙️ Building NetSpeedWidget.exe...")
     command = [
-        sys.executable, "-m", "PyInstaller",
-        "--onefile",                 # Bundle into a single EXE
-        "--noconsole",               # Hide console window
-        "--noconfirm",               # Overwrite existing build
-        "--icon", "icon.ico",        # Set application icon
-        "--add-data", "icon.ico;.",  # Include icon resource in bundle
-        "--name", "NetSpeedWidget",  # Set application name
-        "app.py",                    # Entry point
-        "--add-binary", f"{NODE_DEST};third_party/node",        # Binary for node.exe
-        "--add-data", f"{FAST_BUNDLE};third_party/fast-bundle", # Data for the fast-bundle folder
-        "--hidden-import=win32api", "--hidden-import=win32con", "--hidden-import=pywintypes", "--hidden-import=pythoncom", #win32api
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--onefile",  # Bundle into a single EXE
+        "--noconsole",  # Hide console window
+        "--noconfirm",  # Overwrite existing build
+        "--icon",
+        "icon.ico",  # Set application icon
+        "--add-data",
+        "icon.ico;.",  # Include icon resource in bundle
+        "--name",
+        "NetSpeedWidget",  # Set application name
+        "app.py",  # Entry point
+        "--add-binary",
+        f"{NODE_DEST};third_party/node",  # Binary for node.exe
+        "--add-data",
+        f"{FAST_BUNDLE};third_party/fast-bundle",  # Data for the fast-bundle folder
+        "--hidden-import=win32api",
+        "--hidden-import=win32con",
+        "--hidden-import=pywintypes",
+        "--hidden-import=pythoncom",  # win32api
     ]
 
     try:
@@ -81,7 +91,9 @@ def ensure_fast_bundle() -> None:
     """
     FAST_BUNDLE.mkdir(parents=True, exist_ok=True)
     if not FAST_PACKAGE_JSON.exists():
-        FAST_PACKAGE_JSON.write_text(json.dumps({"name": "fast-bundle", "private": True}, indent=2))
+        FAST_PACKAGE_JSON.write_text(
+            json.dumps({"name": "fast-bundle", "private": True}, indent=2)
+        )
 
     npm = shutil.which("npm")
     if not npm:
@@ -89,14 +101,24 @@ def ensure_fast_bundle() -> None:
 
     # Install fast-cli with production deps only
     subprocess.run(
-        [npm, "install", f"fast-cli@{FAST_CLI_VERSION}", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"],
+        [
+            npm,
+            "install",
+            f"fast-cli@{FAST_CLI_VERSION}",
+            "--omit=dev",
+            "--no-audit",
+            "--no-fund",
+            "--loglevel=error",
+        ],
         cwd=str(FAST_BUNDLE),
         check=True,
     )
 
     cli_js = FAST_BUNDLE / "node_modules" / "fast-cli" / "distribution" / "cli.js"
     if not cli_js.exists():
-        raise RuntimeError("❌ fast-cli install did not produce distribution/cli.js; version mismatch?")
+        raise RuntimeError(
+            "❌ fast-cli install did not produce distribution/cli.js; version mismatch?"
+        )
     print(f"✅ fast-cli ready: {cli_js}")
 
 
@@ -106,7 +128,10 @@ def _where_node() -> Path | None:
     """
     nvm = Path(os.environ.get("APPDATA", "")) / "nvm"
     if nvm.exists():
-        versions = sorted([d for d in nvm.iterdir() if d.is_dir() and (d / NODE_EXE).exists()], reverse=True)
+        versions = sorted(
+            [d for d in nvm.iterdir() if d.is_dir() and (d / NODE_EXE).exists()],
+            reverse=True,
+        )
         if versions:
             return versions[0] / NODE_EXE
     try:
@@ -115,7 +140,7 @@ def _where_node() -> Path | None:
             path = Path(line.strip())
             if path.name.lower() == NODE_EXE and path.is_file():
                 return path
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         return None
     return None
 

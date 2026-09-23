@@ -91,9 +91,7 @@ class LatencyProbe:
     def _measure(self) -> LatencyResult:
         start = time.monotonic()
         try:
-            with socket.create_connection(
-                (self.host, self.port), timeout=self.timeout
-            ):
+            with socket.create_connection((self.host, self.port), timeout=self.timeout):
                 ms = (time.monotonic() - start) * 1000.0
                 return LatencyResult(ms=ms, ok=True, ts=time.time())
         except OSError:

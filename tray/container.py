@@ -157,4 +157,3 @@ class TrayController:
     def _on_check_speedtest(self, *_: Any) -> None:
         """Trigger a manual speedtest from the tray menu."""
         self.app.ui_call(self.app.run_speedtest_now, manual=True)
-

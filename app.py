@@ -12,8 +12,9 @@ screen that is no longer attached.
 import threading
 import time
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import font as tkfont
-from typing import Any, Callable
+from typing import Any
 
 import win32api
 
@@ -23,11 +24,23 @@ from utils.config import (
     get_hotkey,
     get_opacity,
     get_position,
+)
+from utils.config import (
     get_speedtest as config_get_speedtest,
+)
+from utils.config import (
     set_hide_on_hover as config_set_hide_on_hover,
+)
+from utils.config import (
     set_hotkey as config_set_hotkey,
+)
+from utils.config import (
     set_opacity as config_set_opacity,
+)
+from utils.config import (
     set_position as config_set_position,
+)
+from utils.config import (
     set_speedtest as config_set_speedtest,
 )
 from utils.hotkeys import GlobalHotkey, combo_from_tk_event, format_hotkey
@@ -91,18 +104,30 @@ def _rounded_rect(
 ) -> int:
     """Draw a rounded rectangle as a smoothed polygon. Returns item id."""
     points = [
-        x1 + radius, y1,
-        x2 - radius, y1,
-        x2, y1,
-        x2, y1 + radius,
-        x2, y2 - radius,
-        x2, y2,
-        x2 - radius, y2,
-        x1 + radius, y2,
-        x1, y2,
-        x1, y2 - radius,
-        x1, y1 + radius,
-        x1, y1,
+        x1 + radius,
+        y1,
+        x2 - radius,
+        y1,
+        x2,
+        y1,
+        x2,
+        y1 + radius,
+        x2,
+        y2 - radius,
+        x2,
+        y2,
+        x2 - radius,
+        y2,
+        x1 + radius,
+        y2,
+        x1,
+        y2,
+        x1,
+        y2 - radius,
+        x1,
+        y1 + radius,
+        x1,
+        y1,
     ]
     return canvas.create_polygon(points, smooth=True, **kw)
 
@@ -226,8 +251,15 @@ class NetSpeedWidget:
 
         if self._rounded:
             self._pill = _rounded_rect(
-                self.canvas, 1, 1, PILL_W - 1, PILL_H - 1, PILL_R,
-                fill=SURFACE, outline=BORDER, width=1,
+                self.canvas,
+                1,
+                1,
+                PILL_W - 1,
+                PILL_H - 1,
+                PILL_R,
+                fill=SURFACE,
+                outline=BORDER,
+                width=1,
             )
         else:
             self._pill = self.canvas.create_rectangle(
@@ -236,52 +268,91 @@ class NetSpeedWidget:
 
         cy = PILL_H / 2
         self._dot_item = self.canvas.create_oval(
-            DOT_X - DOT_R, cy - DOT_R, DOT_X + DOT_R, cy + DOT_R,
-            fill=FG_DIM, outline="",
+            DOT_X - DOT_R,
+            cy - DOT_R,
+            DOT_X + DOT_R,
+            cy + DOT_R,
+            fill=FG_DIM,
+            outline="",
         )
 
         # Row 1: live speeds and latency
         self._t_down_arrow = self.canvas.create_text(
-            DOWN_ARROW_X, ROW1_Y, text="↓", font=self.font_arrow,
-            fill=DOWN_COLOR, anchor="w",
+            DOWN_ARROW_X,
+            ROW1_Y,
+            text="↓",
+            font=self.font_arrow,
+            fill=DOWN_COLOR,
+            anchor="w",
         )
         self._t_down_val = self.canvas.create_text(
-            DOWN_VAL_X, ROW1_Y, text="0.00", font=self.font_value,
-            fill=DOWN_COLOR, anchor="w",
+            DOWN_VAL_X,
+            ROW1_Y,
+            text="0.00",
+            font=self.font_value,
+            fill=DOWN_COLOR,
+            anchor="w",
         )
         self._t_up_arrow = self.canvas.create_text(
-            UP_ARROW_X, ROW1_Y, text="↑", font=self.font_arrow,
-            fill=UP_COLOR, anchor="w",
+            UP_ARROW_X,
+            ROW1_Y,
+            text="↑",
+            font=self.font_arrow,
+            fill=UP_COLOR,
+            anchor="w",
         )
         self._t_up_val = self.canvas.create_text(
-            UP_VAL_X, ROW1_Y, text="0.00", font=self.font_value,
-            fill=UP_COLOR, anchor="w",
+            UP_VAL_X,
+            ROW1_Y,
+            text="0.00",
+            font=self.font_value,
+            fill=UP_COLOR,
+            anchor="w",
         )
         self._t_unit = self.canvas.create_text(
-            UNIT_X, ROW1_Y + 3, text="Mb/s", font=self.font_unit,
-            fill=FG_DIM, anchor="w",
+            UNIT_X,
+            ROW1_Y + 3,
+            text="Mb/s",
+            font=self.font_unit,
+            fill=FG_DIM,
+            anchor="w",
         )
         self._t_ping = self.canvas.create_text(
-            PING_X, ROW1_Y, text="-- ms", font=self.font_ping,
-            fill=FG_DIM, anchor="w",
+            PING_X,
+            ROW1_Y,
+            text="-- ms",
+            font=self.font_ping,
+            fill=FG_DIM,
+            anchor="w",
         )
 
         # Row 2: last speedtest result, dimmer
         self._t_st_down = self.canvas.create_text(
-            ST_DOWN_X, ROW2_Y, text="↓ --", font=self.font_mini,
-            fill=DOWN_COLOR, anchor="w",
+            ST_DOWN_X,
+            ROW2_Y,
+            text="↓ --",
+            font=self.font_mini,
+            fill=DOWN_COLOR,
+            anchor="w",
         )
         self._t_st_up = self.canvas.create_text(
-            ST_UP_X, ROW2_Y, text="↑ --", font=self.font_mini,
-            fill=UP_COLOR, anchor="w",
+            ST_UP_X,
+            ROW2_Y,
+            text="↑ --",
+            font=self.font_mini,
+            fill=UP_COLOR,
+            anchor="w",
         )
         self._t_st_unit = self.canvas.create_text(
-            ST_UNIT_X, ROW2_Y, text="Mb/s speedtest", font=self.font_unit,
-            fill=FG_DIM, anchor="w",
+            ST_UNIT_X,
+            ROW2_Y,
+            text="Mb/s speedtest",
+            font=self.font_unit,
+            fill=FG_DIM,
+            anchor="w",
         )
 
         self.menu = self._build_menu()
-
 
     def _place_window(self) -> None:
         """Size the window, then restore the saved or default position.
@@ -356,9 +427,7 @@ class NetSpeedWidget:
         canvas.bind("<ButtonPress-1>", self._start_drag)
         canvas.bind("<B1-Motion>", self._on_drag)
         canvas.bind("<ButtonRelease-1>", self._end_drag)
-        canvas.bind(
-            "<Double-Button-1>", lambda _e: self.run_speedtest_now(manual=True)
-        )
+        canvas.bind("<Double-Button-1>", lambda _e: self.run_speedtest_now(manual=True))
         canvas.bind("<Button-3>", self._popup_menu)
 
     def _start_drag(self, event: tk.Event) -> None:
@@ -380,13 +449,18 @@ class NetSpeedWidget:
         self._dragging = False
         config_set_position(self.win_x, self.win_y)
 
-
     def _build_menu(self) -> tk.Menu:
         """Create the right-click context menu."""
         menu = tk.Menu(
-            self.root, tearoff=0, bg=SURFACE, fg=FG,
-            activebackground=BORDER, activeforeground=FG,
-            disabledforeground=FG_DIM, relief="flat", borderwidth=1,
+            self.root,
+            tearoff=0,
+            bg=SURFACE,
+            fg=FG,
+            activebackground=BORDER,
+            activeforeground=FG,
+            disabledforeground=FG_DIM,
+            relief="flat",
+            borderwidth=1,
             font=(FONT_FAMILY, 9),
         )
         menu.add_command(
@@ -399,8 +473,12 @@ class NetSpeedWidget:
         self._menu_speedtest_index = 2
 
         opacity_menu = tk.Menu(
-            menu, tearoff=0, bg=SURFACE, fg=FG,
-            activebackground=BORDER, activeforeground=FG,
+            menu,
+            tearoff=0,
+            bg=SURFACE,
+            fg=FG,
+            activebackground=BORDER,
+            activeforeground=FG,
             font=(FONT_FAMILY, 9),
         )
         for level in (1.0, 0.9, 0.8, 0.7, 0.6, 0.5):
@@ -485,12 +563,8 @@ class NetSpeedWidget:
         """Update texts, peak logging and the graph for one sample."""
         self._smooth_down += (sample.down_mbps - self._smooth_down) * 0.45
         self._smooth_up += (sample.up_mbps - self._smooth_up) * 0.45
-        self.canvas.itemconfig(
-            self._t_down_val, text=_format_speed(self._smooth_down)
-        )
-        self.canvas.itemconfig(
-            self._t_up_val, text=_format_speed(self._smooth_up)
-        )
+        self.canvas.itemconfig(self._t_down_val, text=_format_speed(self._smooth_down))
+        self.canvas.itemconfig(self._t_up_val, text=_format_speed(self._smooth_up))
 
         if sample.up_mbps > self._max_up_seen and sample.up_mbps >= 1.0:
             self._max_up_seen = sample.up_mbps
@@ -500,7 +574,6 @@ class NetSpeedWidget:
             info(f"[NET] New downstream peak {sample.down_mbps:.2f} Mb/s")
 
         self._draw_graph()
-
 
     def _draw_graph(self) -> None:
         """Redraw the rolling traffic graph inside its canvas slot."""
@@ -530,8 +603,12 @@ class NetSpeedWidget:
             return y_base - (value / self._graph_scale) * (g_h - 2)
 
         canvas.create_line(
-            x0, y_base + 0.5, x0 + width, y_base + 0.5,
-            fill=BORDER, tags="graph",
+            x0,
+            y_base + 0.5,
+            x0 + width,
+            y_base + 0.5,
+            fill=BORDER,
+            tags="graph",
         )
 
         down_points: list[float] = []
@@ -543,8 +620,14 @@ class NetSpeedWidget:
 
         end_x = start_x + (len(samples) - 1) * step
         canvas.create_polygon(
-            start_x, y_base, *down_points, end_x, y_base,
-            fill=DOWN_FILL, outline="", tags="graph",
+            start_x,
+            y_base,
+            *down_points,
+            end_x,
+            y_base,
+            fill=DOWN_FILL,
+            outline="",
+            tags="graph",
         )
         canvas.create_line(*down_points, fill=DOWN_COLOR, width=2, tags="graph")
         canvas.create_line(*up_points, fill=UP_COLOR, width=1, tags="graph")
@@ -593,7 +676,6 @@ class NetSpeedWidget:
             f"D {_format_speed(self._smooth_down)} Mb/s | "
             f"U {_format_speed(self._smooth_up)} Mb/s | {ping_text}"
         )
-
 
     # ---------- Hover ----------
 
@@ -667,16 +749,25 @@ class NetSpeedWidget:
         top.configure(bg=SURFACE, padx=16, pady=14)
         top.resizable(False, False)
         tk.Label(
-            top, text="Press your new show/hide hotkey.",
-            font=(FONT_FAMILY, 9, "bold"), fg=FG, bg=SURFACE,
+            top,
+            text="Press your new show/hide hotkey.",
+            font=(FONT_FAMILY, 9, "bold"),
+            fg=FG,
+            bg=SURFACE,
         ).pack(anchor="w")
         tk.Label(
-            top, text="Must include Ctrl or Alt. Esc cancels.",
-            font=(FONT_FAMILY, 8), fg=FG_DIM, bg=SURFACE,
+            top,
+            text="Must include Ctrl or Alt. Esc cancels.",
+            font=(FONT_FAMILY, 8),
+            fg=FG_DIM,
+            bg=SURFACE,
         ).pack(anchor="w", pady=(4, 0))
         status = tk.Label(
-            top, text=f"Current: {format_hotkey(self._hotkey_combo)}",
-            font=(FONT_FAMILY, 8), fg=FG_DIM, bg=SURFACE,
+            top,
+            text=f"Current: {format_hotkey(self._hotkey_combo)}",
+            font=(FONT_FAMILY, 8),
+            fg=FG_DIM,
+            bg=SURFACE,
         )
         status.pack(anchor="w", pady=(8, 0))
         top.bind("<KeyPress>", lambda e: self._capture_hotkey(e, top, status))
@@ -747,7 +838,6 @@ class NetSpeedWidget:
         self.hotkey.stop()
         self.root.destroy()
 
-
     # ---------- Speedtest ----------
 
     def run_speedtest_now(self, manual: bool = True) -> None:
@@ -779,8 +869,7 @@ class NetSpeedWidget:
                 f"up={result.up_mbps:.2f} Mb/s"
             )
             self._notify_tray(
-                f"Speedtest: {saved['down_mbps']:.1f} D | "
-                f"{saved['up_mbps']:.1f} U Mb/s"
+                f"Speedtest: {saved['down_mbps']:.1f} D | {saved['up_mbps']:.1f} U Mb/s"
             )
         except Exception as err:
             warn(f"[SPEEDTEST] run failed: {err}")
@@ -842,4 +931,3 @@ if __name__ == "__main__":
     app.attach_tray(tray)
 
     root.mainloop()
-

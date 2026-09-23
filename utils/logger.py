@@ -1,6 +1,6 @@
 import platform
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from utils.paths import config_path
 
@@ -39,7 +39,10 @@ def startup(app_name: str) -> None:
     """
     Log a single startup banner for visibility.
     """
-    save_log(f"Startup - {app_name} | Runtime - python={platform.python_version()} | exe={getattr(sys, 'frozen', False)}", is_title=True)
+    save_log(
+        f"Startup - {app_name} | Runtime - python={platform.python_version()} | exe={getattr(sys, 'frozen', False)}",
+        is_title=True,
+    )
 
 
 def section(title: str) -> None:
@@ -67,4 +70,4 @@ def _now_iso() -> str:
     """
     Current UTC time in ISO 8601.
     """
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()

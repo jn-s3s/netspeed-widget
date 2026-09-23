@@ -1,7 +1,7 @@
-import os
 import json
+import os
 import time
-from typing import Any, Dict
+from typing import Any
 
 from utils.logger import warn
 from utils.paths import config_path
@@ -9,7 +9,7 @@ from utils.paths import config_path
 CONFIG_FILE = "config.json"
 
 
-def load_config() -> Dict[str, Any]:
+def load_config() -> dict[str, Any]:
     """
     Load the configuration from the JSON config file.
     """
@@ -25,7 +25,7 @@ def load_config() -> Dict[str, Any]:
         return {}
 
 
-def save_config(config: Dict[str, Any]) -> None:
+def save_config(config: dict[str, Any]) -> None:
     """
     Save the given configuration dictionary to the JSON config file.
     """
@@ -93,7 +93,7 @@ def set_hide_on_hover(value: bool) -> None:
     save_config(config)
 
 
-def get_speedtest(default: Dict[str, Any] | None = None) -> Dict[str, Any] | None:
+def get_speedtest(default: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """
     Returns the last saved speedtest dict or default.
     Dict looks like: {"down_mbps": float, "up_mbps": float, "ts": float}
@@ -101,14 +101,18 @@ def get_speedtest(default: Dict[str, Any] | None = None) -> Dict[str, Any] | Non
     try:
         config = load_config()
         speedtest = config.get("speedtest")
-        if isinstance(speedtest, dict) and {"down_mbps", "up_mbps", "ts"} <= set(speedtest.keys()):
+        if isinstance(speedtest, dict) and {"down_mbps", "up_mbps", "ts"} <= set(
+            speedtest.keys()
+        ):
             return speedtest
         return default
     except (TypeError, ValueError):
         return default
 
 
-def set_speedtest(down_mbps: float, up_mbps: float, ts: float | None = None) -> Dict[str, Any]:
+def set_speedtest(
+    down_mbps: float, up_mbps: float, ts: float | None = None
+) -> dict[str, Any]:
     """
     Saves a compact speedtest snapshot. Returns the saved dict.
     """
@@ -121,6 +125,7 @@ def set_speedtest(down_mbps: float, up_mbps: float, ts: float | None = None) -> 
     config["speedtest"] = payload
     save_config(config)
     return payload
+
 
 def get_hotkey(default: str = "ctrl+shift+alt+n") -> str:
     """Returns the global show/hide hotkey combo string."""

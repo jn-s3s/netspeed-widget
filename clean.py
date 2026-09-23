@@ -1,6 +1,6 @@
-import shutil
-import os
 import glob
+import os
+import shutil
 
 
 def exec() -> None:

@@ -13,8 +13,9 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import psutil
 
@@ -116,6 +117,7 @@ def _measure_passive_estimate() -> SpeedtestResult | None:
         down_mbps=(second.bytes_recv - first.bytes_recv) * 8.0 / elapsed / 1e6,
         up_mbps=(second.bytes_sent - first.bytes_sent) * 8.0 / elapsed / 1e6,
     )
+
 
 def _configure_speedtest(tester: Any) -> None:
     """Bias speedtest-cli toward larger upload payloads on Windows.
@@ -250,4 +252,3 @@ def _first_float(data: dict, keys: tuple[str, ...]) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
-

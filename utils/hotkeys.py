@@ -12,7 +12,8 @@ report "taken, pick another" instead of silently stealing keys.
 
 import re
 import threading
-from typing import Any, Callable, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import pywintypes
 import win32api
@@ -54,9 +55,20 @@ _EXTRA_KEYS = {
 # Tk reports modifier-only presses with these keysyms; they mean
 # "keep waiting" rather than "this is the combo".
 _IGNORE_KEYSYMS = {
-    "shift_l", "shift_r", "control_l", "control_r", "alt_l", "alt_r",
-    "iso_level3_shift", "caps_lock", "num_lock", "scroll_lock",
-    "meta_l", "meta_r", "super_l", "super_r",
+    "shift_l",
+    "shift_r",
+    "control_l",
+    "control_r",
+    "alt_l",
+    "alt_r",
+    "iso_level3_shift",
+    "caps_lock",
+    "num_lock",
+    "scroll_lock",
+    "meta_l",
+    "meta_r",
+    "super_l",
+    "super_r",
 }
 
 # Tk keysyms that differ from our canonical key names.
@@ -64,13 +76,20 @@ _TK_KEY_ALIASES = {"return": "enter", "prior": "pageup", "next": "pagedown"}
 
 # On a US layout, Shift+digit reports the symbol keysym instead.
 _SHIFTED_DIGITS = {
-    "exclam": "1", "at": "2", "numbersign": "3", "dollar": "4",
-    "percent": "5", "asciicircum": "6", "ampersand": "7",
-    "asterisk": "8", "parenleft": "9", "parenright": "0",
+    "exclam": "1",
+    "at": "2",
+    "numbersign": "3",
+    "dollar": "4",
+    "percent": "5",
+    "asciicircum": "6",
+    "ampersand": "7",
+    "asterisk": "8",
+    "parenleft": "9",
+    "parenright": "0",
 }
 
 
-def _key_to_vk(key: str) -> Optional[int]:
+def _key_to_vk(key: str) -> int | None:
     if len(key) == 1 and key.isalnum():
         return ord(key.upper())
     if re.fullmatch(r"f([1-9]|1[0-2])", key):
@@ -78,7 +97,7 @@ def _key_to_vk(key: str) -> Optional[int]:
     return _EXTRA_KEYS.get(key)
 
 
-def parse_hotkey(combo: str) -> Tuple[int, int]:
+def parse_hotkey(combo: str) -> tuple[int, int]:
     """Parse "ctrl+shift+n" into (modifier flags, virtual key code).
 
     Raises ValueError when the combo is malformed, uses an unsupported
@@ -114,7 +133,7 @@ def format_hotkey(combo: str) -> str:
     return "+".join(pretty)
 
 
-def combo_from_tk_event(event: Any) -> Optional[str]:
+def combo_from_tk_event(event: Any) -> str | None:
     """Convert a Tk KeyPress event into a canonical combo string.
 
     Returns None for pure modifier presses (caller keeps listening) and
@@ -150,9 +169,9 @@ class GlobalHotkey:
 
     def __init__(self, on_trigger: Callable[[], None]) -> None:
         self._on_trigger = on_trigger
-        self._hwnd: Optional[int] = None
-        self._init_error: Optional[str] = None
-        self._pending: Optional[dict] = None
+        self._hwnd: int | None = None
+        self._init_error: str | None = None
+        self._pending: dict | None = None
         ready = threading.Event()
         self._thread = threading.Thread(
             target=self._run, args=(ready,), name="hotkey-listener", daemon=True
@@ -173,8 +192,18 @@ class GlobalHotkey:
             }
             atom = win32gui.RegisterClass(wnd_class)
             self._hwnd = win32gui.CreateWindowEx(
-                0, atom, "NetSpeedHotkeySink", 0, 0, 0, 0, 0,
-                _HWND_MESSAGE, 0, win32api.GetModuleHandle(None), None,
+                0,
+                atom,
+                "NetSpeedHotkeySink",
+                0,
+                0,
+                0,
+                0,
+                0,
+                _HWND_MESSAGE,
+                0,
+                win32api.GetModuleHandle(None),
+                None,
             )
         except Exception as err:
             self._init_error = str(err)
@@ -182,7 +211,7 @@ class GlobalHotkey:
         if self._hwnd is not None:
             win32gui.PumpMessages()
 
-    def apply_combo(self, combo: str) -> Tuple[bool, Optional[str]]:
+    def apply_combo(self, combo: str) -> tuple[bool, str | None]:
         """Validate and register a combo. Returns (ok, error message)."""
         try:
             modifiers, vk = parse_hotkey(combo)
@@ -193,7 +222,11 @@ class GlobalHotkey:
 
         done = threading.Event()
         self._pending = {
-            "mod": modifiers, "vk": vk, "done": done, "ok": False, "error": None,
+            "mod": modifiers,
+            "vk": vk,
+            "done": done,
+            "ok": False,
+            "error": None,
         }
         try:
             win32gui.PostMessage(self._hwnd, _WM_APPLY, 0, 0)
@@ -221,8 +254,10 @@ class GlobalHotkey:
             pass  # nothing registered yet
         try:
             win32gui.RegisterHotKey(
-                self._hwnd, self.HOTKEY_ID,
-                req["mod"] | win32con.MOD_NOREPEAT, req["vk"],
+                self._hwnd,
+                self.HOTKEY_ID,
+                req["mod"] | win32con.MOD_NOREPEAT,
+                req["vk"],
             )
             req["ok"] = True
         except pywintypes.error as err:
