@@ -713,8 +713,17 @@ class NetSpeedWidget:
     # ---------- Lifecycle ----------
 
     def ui_call(self, func: Callable[..., None], *args: Any, **kwargs: Any) -> None:
-        """Schedule a callable on the Tk main thread. Safe from any thread."""
-        self.root.after(0, lambda: func(*args, **kwargs))
+        """Schedule a callable on the Tk main thread. Safe from any thread.
+
+        Calls that land after the window is destroyed are dropped; that
+        is the normal shutdown race for background workers, not an
+        error worth reporting. Cross-thread calls after mainloop exit
+        raise RuntimeError, not TclError, so both are caught.
+        """
+        try:
+            self.root.after(0, lambda: func(*args, **kwargs))
+        except (tk.TclError, RuntimeError):
+            pass  # documented contract: Tk gone or mainloop exited, drop call
 
     def show_window(self) -> None:
         """Show the widget and keep it on top."""
