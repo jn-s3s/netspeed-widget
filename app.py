@@ -468,9 +468,9 @@ class NetSpeedWidget:
             command=lambda: self.run_speedtest_now(manual=True),
         )
         menu.add_command(label="Session: --", state="disabled")
+        self._menu_session_index = menu.index("end")
         menu.add_command(label="Last speedtest: --", state="disabled")
-        self._menu_session_index = 1
-        self._menu_speedtest_index = 2
+        self._menu_speedtest_index = menu.index("end")
 
         opacity_menu = tk.Menu(
             menu,
@@ -495,7 +495,7 @@ class NetSpeedWidget:
             command=self._toggle_hover_hide,
         )
         menu.add_command(label="Change hotkey...", command=self.open_hotkey_dialog)
-        self._menu_hotkey_index = 5
+        self._menu_hotkey_index = menu.index("end")
         menu.add_separator()
         menu.add_command(label="Reset position", command=self.reset_position)
         menu.add_command(label="Hide", command=self.hide_window)
