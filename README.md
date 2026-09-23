@@ -90,7 +90,7 @@ Or call the tools directly:
 
 `ruff check .` and `ruff format --check .` must both exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
 
-The test suite under `tests/` uses pytest and covers hotkey parsing, speedtest JSON parsing, sampler rate math (including counter-reset and zero-elapsed edge cases) and display formatting. Run it locally:
+The test suite under `tests/` uses pytest and covers hotkey parsing, speedtest JSON parsing and provider chain, sampler rate math (including counter-reset and zero-elapsed edge cases), display formatting, latency probing, config persistence, logging, path resolution, tray actions and widget interactions. Run it locally:
 
 ```powershell
 .venv\Scripts\python -m pytest tests -q
@@ -111,7 +111,7 @@ CI runs the same command on every push and pull request, and again before every 
 - `tray/container.py` - the system tray icon and menu.
 - `build.py` and `clean.py` - packaging helpers.
 - `lint.ps1` - runs the Ruff lint and format checks.
-- `tests/` - pytest unit tests for hotkeys, speedtest parsing, sampler math and formatting.
+- `tests/` - pytest unit tests for hotkeys, speedtest parsing, sampler math, formatting, latency, config, logger, paths, tray and app interactions.
 - `conftest.py` - makes the repo root importable for the test suite.
 
 ## Tech stack
