@@ -56,6 +56,8 @@ def main() -> None:
         print("✅ Build successful!")
     except subprocess.CalledProcessError as e:
         print("❌ Build failed:", e)
+        # Non-zero exit so the release workflow aborts instead of publishing a stale exe.
+        sys.exit(1)
 
 
 def ensure_node_runtime() -> None:

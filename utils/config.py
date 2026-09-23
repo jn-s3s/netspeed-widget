@@ -3,6 +3,7 @@ import json
 import time
 from typing import Any, Dict
 
+from utils.logger import warn
 from utils.paths import config_path
 
 CONFIG_FILE = "config.json"
@@ -19,7 +20,8 @@ def load_config() -> Dict[str, Any]:
     try:
         with open(config_file_path, "r", encoding="utf-8") as file_stream:
             return json.load(file_stream)
-    except Exception:
+    except (OSError, ValueError):
+        # Unreadable or corrupt config falls back to defaults.
         return {}
 
 
@@ -30,9 +32,8 @@ def save_config(config: Dict[str, Any]) -> None:
     try:
         with open(config_path(CONFIG_FILE), "w", encoding="utf-8") as file_stream:
             json.dump(config, file_stream, indent=2)
-    except Exception:
-        # Fail silently if writing fails
-        pass
+    except (OSError, TypeError, ValueError) as err:
+        warn(f"[CONFIG] Failed to save config: {err}")
 
 
 def get_opacity(default: float = 0.72) -> float:
@@ -44,7 +45,7 @@ def get_opacity(default: float = 0.72) -> float:
     try:
         val = float(config.get("opacity", default))
         return max(0.40, min(1.00, val))
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -81,7 +82,7 @@ def get_hide_on_hover(default: bool = False) -> bool:
     """Returns whether the widget hides when the cursor enters it."""
     try:
         return bool(load_config().get("hide_on_hover", default))
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -103,7 +104,7 @@ def get_speedtest(default: Dict[str, Any] | None = None) -> Dict[str, Any] | Non
         if isinstance(speedtest, dict) and {"down_mbps", "up_mbps", "ts"} <= set(speedtest.keys()):
             return speedtest
         return default
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
@@ -126,7 +127,7 @@ def get_hotkey(default: str = "ctrl+shift+alt+n") -> str:
     try:
         value = load_config().get("hotkey", default)
         return value if isinstance(value, str) and value else default
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 

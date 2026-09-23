@@ -16,7 +16,7 @@ def resource_path(relative_path: str) -> str:
     is_frozen: Final[bool] = bool(getattr(sys, "frozen", False))
 
     if is_frozen:
-        base_dir = getattr(sys, "_MEIPASS")  # type: ignore[attr-defined]
+        base_dir = sys._MEIPASS  # type: ignore[attr-defined]
     else:
         # utils/paths.py -> go up to project root
         utils_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,6 +44,7 @@ def _appdata_dir() -> str:
     target = os.path.join(base, "NetSpeedWidget")
     try:
         os.makedirs(target, exist_ok=True)
-    except Exception:
-        pass
+    except OSError:
+        # Best effort: config load/save surfaces a real failure if the dir is unusable.
+        return target
     return target

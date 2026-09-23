@@ -14,9 +14,9 @@ def exec() -> None:
 
         for file in glob.glob("*.spec"):
             os.remove(file)
-    except Exception:
-        # Fail silently if cleanup fails
-        pass
+    except OSError as err:
+        # Cleanup is best effort; locked or already-removed files are fine to skip.
+        print(f"⚠️ Cleanup skipped: {err}")
 
 
 if __name__ == "__main__":

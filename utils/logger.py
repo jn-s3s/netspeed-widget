@@ -28,7 +28,7 @@ def save_log(message: str, has_time: bool = True, is_title: bool = False) -> str
             formatted = f"{message}\n"
 
         with open(config_path(LOG_FILE), "a", encoding="utf-8", errors="replace") as f:
-                f.write(formatted)
+            f.write(formatted)
         return message
     except Exception:
         # Logging must never break the app.
