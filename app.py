@@ -43,6 +43,7 @@ from utils.config import (
 from utils.config import (
     set_speedtest as config_set_speedtest,
 )
+from utils.format import format_speed
 from utils.hotkeys import GlobalHotkey, combo_from_tk_event, format_hotkey
 from utils.latency import LatencyProbe
 from utils.logger import info, section, startup, warn
@@ -88,15 +89,6 @@ PING_X = 148
 ST_DOWN_X, ST_UP_X, ST_UNIT_X = 24, 66, 108
 GRAPH_X0, GRAPH_W = 190, 142
 GRAPH_TOP, GRAPH_BOTTOM = 6, PILL_H - 6
-
-
-def _format_speed(mbps: float) -> str:
-    """Format a speed with precision matched to its magnitude."""
-    if mbps >= 100.0:
-        return f"{mbps:.0f}"
-    if mbps >= 10.0:
-        return f"{mbps:.1f}"
-    return f"{mbps:.2f}"
 
 
 def _rounded_rect(
@@ -563,8 +555,8 @@ class NetSpeedWidget:
         """Update texts, peak logging and the graph for one sample."""
         self._smooth_down += (sample.down_mbps - self._smooth_down) * 0.45
         self._smooth_up += (sample.up_mbps - self._smooth_up) * 0.45
-        self.canvas.itemconfig(self._t_down_val, text=_format_speed(self._smooth_down))
-        self.canvas.itemconfig(self._t_up_val, text=_format_speed(self._smooth_up))
+        self.canvas.itemconfig(self._t_down_val, text=format_speed(self._smooth_down))
+        self.canvas.itemconfig(self._t_up_val, text=format_speed(self._smooth_up))
 
         if sample.up_mbps > self._max_up_seen and sample.up_mbps >= 1.0:
             self._max_up_seen = sample.up_mbps
@@ -673,8 +665,8 @@ class NetSpeedWidget:
         else:
             ping_text = f"{result.ms:.0f} ms"
         self.tray.update_live_status(
-            f"D {_format_speed(self._smooth_down)} Mb/s | "
-            f"U {_format_speed(self._smooth_up)} Mb/s | {ping_text}"
+            f"D {format_speed(self._smooth_down)} Mb/s | "
+            f"U {format_speed(self._smooth_up)} Mb/s | {ping_text}"
         )
 
     # ---------- Hover ----------
