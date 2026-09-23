@@ -10,3 +10,6 @@ third_party/fast-bundle/
 
 # Others
 /config.json
+
+# Ruff linter and formatter cache
+.ruff_cache/

@@ -1,6 +1,19 @@
 # NetSpeed Widget
 
+<p align="center">
+  <img src="icon.ico" width="96" alt="NetSpeed Widget icon">
+</p>
+
 A tiny always-on-top widget for Windows that shows your live network speed, ping and a rolling traffic graph. It sits in a corner of your screen, stays out of the way and gives you a one-click speedtest when you need it.
+
+
+[![CI](https://github.com/jn-s3s/netspeed-widget/actions/workflows/ci.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/ci.yml)
+[![Release](https://github.com/jn-s3s/netspeed-widget/actions/workflows/release.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+
+
+<!-- INSERT IMAGE HERE -->
 
 ## What it shows
 
@@ -56,6 +69,31 @@ python -m venv .venv
 
 This produces a single folder under `dist/` with the exe, the icon, the bundled Node runtime and fast-cli. Double-click the exe and the widget appears.
 
+## Development
+
+Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Install the dev tools once:
+
+```powershell
+.venv\Scripts\pip install -r requirements-dev.txt
+```
+
+Run both checks (same commands CI runs):
+
+```powershell
+.\lint.ps1
+```
+
+Or call the tools directly:
+
+```powershell
+.venv\Scripts\ruff check .          # lint
+.venv\Scripts\ruff check --fix .    # lint and apply safe fixes
+.venv\Scripts\ruff format .         # format in place
+.venv\Scripts\ruff format --check . # verify formatting only
+```
+
+`ruff check .` and `ruff format --check .` must both exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
+
 ## Project layout
 
 - `app.py` - the widget itself: window, labels, graph, menus, hotkeys.
@@ -70,4 +108,17 @@ This produces a single folder under `dist/` with the exe, the icon, the bundled 
 
 ---
 
-Made by [jn-s3s](https://github.com/jn-s3s). Enjoy.
+## Tech stack
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and conventions. Please follow Conventional Commits and make sure `pnpm typecheck` passes before opening a pull request.
+
+
+## Security
+
+Found a vulnerability? Please do not open a public issue. See [SECURITY.md](SECURITY.md) for how to report it privately.
+
+## License
+
+Released under the [MIT License](LICENSE).

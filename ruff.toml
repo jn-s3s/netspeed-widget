@@ -1,7 +1,7 @@
 # Ruff configuration for NetSpeed Widget.
 # Shared by local runs, lint.ps1 and the GitHub Actions lint workflow.
 
-# Match the Python version releases are built with (build-release.yml uses 3.11).
+# Match the Python version releases are built with (release.yml uses 3.11).
 target-version = "py311"
 
 # 88 characters matches the project convention (see ~/.agents/conventions/python.md).
