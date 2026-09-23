@@ -457,20 +457,29 @@ class NetSpeedWidget:
     # ---------- Tick loop and rendering ----------
 
     def _tick(self) -> None:
-        """UI refresh loop. Runs on the Tk main thread via `after`."""
+        """UI refresh loop. Runs on the Tk main thread via `after`.
+
+        A failing body is logged and the next tick is still scheduled
+        from `finally`, so one bad render can never freeze the UI
+        silently while the sampler threads keep running.
+        """
         if not self._run:
             return
-        sample = self.sampler.latest
-        if sample is not None and sample.ts != self._last_sample_ts:
-            self._last_sample_ts = sample.ts
-            self._render_sample(sample)
-        self._render_latency()
-        self._tick_count += 1
-        if self._tick_count % 8 == 0:
-            self._push_tray_status()
-        if self._tick_count % MONITOR_CHECK_TICKS == 0:
-            self._ensure_visible()
-        self.root.after(UI_TICK_MS, self._tick)
+        try:
+            sample = self.sampler.latest
+            if sample is not None and sample.ts != self._last_sample_ts:
+                self._last_sample_ts = sample.ts
+                self._render_sample(sample)
+            self._render_latency()
+            self._tick_count += 1
+            if self._tick_count % 8 == 0:
+                self._push_tray_status()
+            if self._tick_count % MONITOR_CHECK_TICKS == 0:
+                self._ensure_visible()
+        except Exception as err:
+            warn(f"[APP] UI tick failed: {err}")
+        finally:
+            self.root.after(UI_TICK_MS, self._tick)
 
     def _render_sample(self, sample: NetSample) -> None:
         """Update texts, peak logging and the graph for one sample."""

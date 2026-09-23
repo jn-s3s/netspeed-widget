@@ -15,8 +15,9 @@ line-length = 88
 # Every entry below is a deliberate defensive boundary that logs or records the
 # error and must never crash the widget, so narrowing to specific exception
 # types is either unsafe or would require catching dozens of third-party types.
-# GUI monitor enumeration and the speedtest background thread: any failure logs
-# and falls back rather than taking down the Tk app.
+# GUI monitor enumeration, the UI tick loop and the speedtest background
+# thread: each logs the failure and keeps the widget running instead of
+# freezing or crashing the Tk app.
 "app.py" = ["BLE001"]
 # Win32 window setup records its init error for later, and the hotkey callback
 # is isolated so a user-callback bug cannot kill the message pump.
