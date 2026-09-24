@@ -1,0 +1,48 @@
+name: Tag release
+
+on:
+    push:
+        branches: [main]
+
+permissions:
+    contents: read
+
+concurrency:
+    group: tag-release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    tag:
+        name: Tag version from changelog
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  fetch-depth: 0
+
+            - name: Create and push version tag
+              env:
+                  RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+              run: |
+                  $content = Get-Content -Raw CHANGELOG.md
+                  $versionMatch = [regex]::Match($content, '(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}')
+                  if (-not $versionMatch.Success) {
+                      throw "No dated version section found in CHANGELOG.md; refusing to tag."
+                  }
+                  $tag = "v$($versionMatch.Groups[1].Value)"
+
+                  git fetch --tags --force
+                  if (git tag --list $tag) {
+                      Write-Host "Tag $tag already exists; nothing to do."
+                      exit 0
+                  }
+
+                  # The default GITHUB_TOKEN cannot create v* tags under the tag
+                  # protection ruleset, and its pushes would not trigger the
+                  # release workflow, so the push authenticates with a PAT that
+                  # belongs to a ruleset bypass actor.
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git tag $tag
+                  git push "https://x-access-token:$env:RELEASE_PAT@github.com/${{ github.repository }}.git" $tag

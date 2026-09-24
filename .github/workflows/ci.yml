@@ -40,3 +40,43 @@ jobs:
 
             - name: Run tests
               run: python -m pytest tests -q
+
+    changelog-gate:
+        name: Changelog gate
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  fetch-depth: 0
+
+            - name: Verify changelog has a fresh version
+              run: |
+                  $content = Get-Content -Raw CHANGELOG.md
+
+                  $unreleased = [regex]::Match($content, '(?ms)^## \[Unreleased\]\r?\n(.*?)(?=^## \[)')
+                  if (-not $unreleased.Success) {
+                      throw "CHANGELOG.md has no ## [Unreleased] section."
+                  }
+                  if ($unreleased.Groups[1].Value.Trim()) {
+                      throw "## [Unreleased] must be empty before merging to main; run the changelog update first."
+                  }
+
+                  $versionMatch = [regex]::Match($content, '(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}')
+                  if (-not $versionMatch.Success) {
+                      throw "No dated version section found in CHANGELOG.md."
+                  }
+                  $version = $versionMatch.Groups[1].Value
+
+                  git fetch --tags --force
+                  if (git tag --list "v$version") {
+                      throw "Tag v$version already exists; CHANGELOG.md has no new version to release."
+                  }
+
+                  $latestTag = git tag --list "v*.*.*" --sort=-v:refname | Select-Object -First 1
+                  if ($latestTag -and ([version]$version -le [version]$latestTag.TrimStart('v'))) {
+                      throw "Changelog version v$version is not newer than the latest tag $latestTag."
+                  }
+
+                  Write-Host "Changelog gate passed: v$version is ready to release."
