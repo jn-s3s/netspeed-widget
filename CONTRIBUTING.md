@@ -31,6 +31,16 @@ python -m venv .venv
 - Keep each pull request focused on one concern.
 - By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Releasing
+
+The workflows in `.github/workflows` cut releases; no tag is pushed by hand.
+
+- Every pull request into `main` must add a dated `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` and leave `## [Unreleased]` empty. The new section should say what changed for someone running or building the app.
+- `changelog-gate` in `ci.yml` enforces that contract: the unreleased section must be empty, the version must be newer than the latest tag and `APP_VERSION` in `utils/version.py` must match the newest dated changelog version. Bump the constant in the same pull request that adds the section. The job runs only on pull requests whose base is `main`, never on a push and never on a pull request into `dev`, so a broken changelog can still reach `dev`.
+- `changelog-gate` must be configured as a required status check on `main`, otherwise a pull request that fails it can still be merged.
+- Merging to `main` runs `tag-release.yml`, which reads the newest dated section, creates the `vX.Y.Z` tag and pushes it. That tag starts `release.yml`, which builds the app, packages the Windows x64 zip and opens a draft GitHub release whose notes are generated verbatim from the changelog section. A maintainer publishes the draft release by hand.
+- The tag push authenticates with the `RELEASE_PAT` repository secret, a personal access token whose owner is a bypass actor on the tag ruleset. The default `GITHUB_TOKEN` cannot push `v*` tags and its pushes would not start `release.yml`, so a missing secret fails `tag-release.yml` before any tag is created.
+
 ## Reporting bugs and security issues
 
 Bug reports go through GitHub issues. Security vulnerabilities must not be opened as public issues; see [SECURITY.md](SECURITY.md) instead.
