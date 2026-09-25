@@ -356,3 +356,25 @@ class TestTickLoop:
         widget._render_latency()
 
         assert fake_gui.canvas.text_of(widget._t_ping) == f"{ms:.0f} ms"
+        expected_color = {
+            20: app_module.GOOD_COLOR,
+            120: app_module.WARN_COLOR,
+            400: app_module.BAD_COLOR,
+        }[ms]
+        expected_up_color = app_module.UP_COLOR if ms == 20 else expected_color
+        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == expected_color
+        assert fake_gui.canvas.items[widget._t_up_val]["fill"] == expected_up_color
+        assert fake_gui.canvas.items[widget._t_up_arrow]["fill"] == expected_up_color
+        assert fake_gui.canvas.items[widget._t_st_up]["fill"] == expected_up_color
+
+    def test_offline_recolors_speed_rows_to_red(self, make_widget, fake_gui):
+        widget = make_widget()
+        widget.probe.latest = SimpleNamespace(ok=False, ms=None, ts=0.0)
+
+        widget._render_latency()
+
+        assert fake_gui.canvas.text_of(widget._t_ping) == "offline"
+        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == app_module.BAD_COLOR
+        assert fake_gui.canvas.items[widget._t_up_val]["fill"] == app_module.BAD_COLOR
+        assert fake_gui.canvas.items[widget._t_up_arrow]["fill"] == app_module.BAD_COLOR
+        assert fake_gui.canvas.items[widget._t_st_up]["fill"] == app_module.BAD_COLOR

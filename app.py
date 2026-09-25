@@ -67,6 +67,8 @@ from utils.theme import (
     UP_COLOR,
     WARN_COLOR,
     rounded_rect,
+    status_download_color,
+    status_upload_color,
 )
 from utils.version import APP_NAME
 
@@ -162,7 +164,7 @@ class NetSpeedWidget:
         self._max_down_seen = 0.0
         self._tick_count = 0
         self._tick_failures = 0
-        self._status_color = ""
+        self._status_color = GOOD_COLOR
         self._hover_guard_active = False
         self._dragging = False
         self._drag_offset = (0, 0)
@@ -588,7 +590,7 @@ class NetSpeedWidget:
             self._max_down_seen = sample.down_mbps
             _net_log.info(f"new downstream peak {sample.down_mbps:.2f} Mb/s")
 
-        self._graph.draw(self.sampler.history)
+        self._graph.draw(self.sampler.history, self._status_color)
 
     def _render_latency(self) -> None:
         """Refresh the latency text and status dot."""
@@ -614,10 +616,20 @@ class NetSpeedWidget:
             self._set_status(color)
 
     def _set_status(self, color: str) -> None:
-        """Recolor the status dot, skipping redundant canvas updates."""
+        """Recolor status-dependent UI and redraw the graph for `color`."""
         if color != self._status_color:
             self._status_color = color
+            download_color = status_download_color(color)
+
+            self.canvas.itemconfig(self._t_down_arrow, fill=download_color)
+            self.canvas.itemconfig(self._t_down_val, fill=download_color)
+            self.canvas.itemconfig(self._t_st_down, fill=download_color)
             self.canvas.itemconfig(self._dot_item, fill=color)
+            upload_color = status_upload_color(color)
+            self.canvas.itemconfig(self._t_up_arrow, fill=upload_color)
+            self.canvas.itemconfig(self._t_up_val, fill=upload_color)
+            self.canvas.itemconfig(self._t_st_up, fill=upload_color)
+            self._graph.draw(self.sampler.history, color)
 
     def _push_tray_status(self) -> None:
         """Update the tray tooltip with current speeds and latency."""

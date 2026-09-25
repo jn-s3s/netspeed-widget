@@ -5,7 +5,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from utils.sampler import NetSample
-from utils.theme import BORDER, DOWN_COLOR, DOWN_FILL, UP_COLOR
+from utils.theme import (
+    BORDER,
+    GOOD_COLOR,
+    status_download_color,
+    status_fill_color,
+    status_upload_color,
+)
 
 BASELINE_OFFSET = 0.5
 SCALE_DECAY = 0.97
@@ -39,8 +45,10 @@ class TrafficGraph:
     capacity: int
     _scale: float = field(default=1.0, init=False)
 
-    def draw(self, samples: Sequence[NetSample]) -> None:
-        """Redraw the slot for `samples`, oldest first. No-op if too short."""
+    def draw(
+        self, samples: Sequence[NetSample], status_color: str = GOOD_COLOR
+    ) -> None:
+        """Redraw the slot for `samples` in `status_color`."""
         self.canvas.delete("graph")
         if len(samples) < 2:
             return
@@ -76,18 +84,23 @@ class TrafficGraph:
             down_points.extend((x, self._to_y(sample.down_mbps)))
             up_points.extend((x, self._to_y(sample.up_mbps)))
 
+        fill_color = status_fill_color(status_color)
         self.canvas.create_polygon(
             start_x,
             base,
             *down_points,
             end_x,
             base,
-            fill=DOWN_FILL,
+            fill=fill_color,
             outline="",
             tags="graph",
         )
-        self.canvas.create_line(*down_points, fill=DOWN_COLOR, width=2, tags="graph")
-        self.canvas.create_line(*up_points, fill=UP_COLOR, width=1, tags="graph")
+        download_color = status_download_color(status_color)
+        self.canvas.create_line(
+            *down_points, fill=download_color, width=2, tags="graph"
+        )
+        upload_color = status_upload_color(status_color)
+        self.canvas.create_line(*up_points, fill=upload_color, width=1, tags="graph")
 
     def _to_y(self, value: float) -> float:
         """Map a Mb/s value onto the slot, scaled by the current peak."""

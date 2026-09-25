@@ -5,6 +5,16 @@ import pytest
 from conftest import FakeCanvas
 from utils.graph import TrafficGraph
 from utils.sampler import NetSample
+from utils.theme import (
+    BAD_COLOR,
+    BAD_FILL,
+    FG_DIM,
+    GOOD_COLOR,
+    GOOD_FILL,
+    UP_COLOR,
+    WARN_COLOR,
+    WARN_FILL,
+)
 
 
 def _graph() -> TrafficGraph:
@@ -109,6 +119,37 @@ class TestDrawing:
         graph.draw(samples)
 
         assert graph.canvas.deleted_tags == ["graph", "graph"]
+
+    @pytest.mark.parametrize(
+        ("status_color", "expected_fill", "expected_upload"),
+        [
+            (GOOD_COLOR, GOOD_FILL, UP_COLOR),
+            (WARN_COLOR, WARN_FILL, WARN_COLOR),
+            (BAD_COLOR, BAD_FILL, BAD_COLOR),
+            # Not a status color: the fill must follow the lines, not go green.
+            (FG_DIM, FG_DIM, FG_DIM),
+        ],
+    )
+    def test_status_color_recolors_lines_and_area(
+        self, status_color, expected_fill, expected_upload
+    ):
+        graph = _graph()
+
+        graph.draw(_series([(3.0, 1.0), (4.0, 2.0)]), status_color)
+
+        lines = [
+            item
+            for item in graph.canvas.items.values()
+            if item["kind"] == "line" and "width" in item
+        ]
+        area = next(
+            item for item in graph.canvas.items.values() if item["kind"] == "polygon"
+        )
+        assert [line["fill"] for line in lines] == [
+            status_color,
+            expected_upload,
+        ]
+        assert area["fill"] == expected_fill
 
     def test_all_items_stay_inside_the_slot(self):
         graph = _graph()
