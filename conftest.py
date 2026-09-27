@@ -80,6 +80,20 @@ class FakeCanvas:
     def itemconfig(self, item_id: int, **kwargs) -> None:
         self.items.setdefault(item_id, {"kind": "unknown"}).update(kwargs)
 
+    def itemcget(self, item_id: int, key: str) -> str:
+        """Read a stored option, defaulting to "" like Tk does."""
+        return str(self.items.get(item_id, {}).get(key, ""))
+
+    def coords(self, item_id: int, *coords) -> list:
+        """Record a position when given one, otherwise read the stored one."""
+        if coords:
+            self.items.setdefault(item_id, {"kind": "unknown"})["coords"] = list(coords)
+        return self.items.get(item_id, {}).get("coords", [])
+
+    def itemconfigure(self, item_id: int, **kwargs) -> None:
+        """Alias of itemconfig, used by the readout layout step."""
+        self.items.setdefault(item_id, {"kind": "unknown"}).update(kwargs)
+
     def delete(self, tag: str) -> None:
         self.deleted_tags.append(tag)
 
@@ -195,6 +209,7 @@ def fake_gui(monkeypatch):
     menu = MagicMock()
     menu.index.return_value = 1
     font = MagicMock()
+    font.measure.return_value = 0
 
     monkeypatch.setattr(app_module.tk, "Canvas", lambda *a, **k: canvas)
     monkeypatch.setattr(app_module.tk, "Menu", lambda *a, **k: menu)

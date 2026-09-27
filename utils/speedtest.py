@@ -104,7 +104,7 @@ def _measure_python_speedtest() -> SpeedtestResult | None:
 
     _log.info("backend: speedtest-cli (python module)")
     try:
-        tester = speedtest_module.Speedtest()
+        tester = speedtest_module.Speedtest()  # type: ignore[reportAttributeAccessIssue]
         tester.get_servers(None)
         tester.get_best_server()
         _configure_speedtest(tester)
@@ -258,7 +258,7 @@ def _parse_fast_result(data: dict | None) -> tuple[float | None, float | None]:
     if not isinstance(data, dict):
         return None, None
 
-    candidates = [
+    candidates: list[tuple[dict, tuple[str, ...], tuple[str, ...]]] = [
         (data, ("downloadSpeed", "download"), ("uploadSpeed", "upload")),
     ]
     speeds = data.get("speeds")

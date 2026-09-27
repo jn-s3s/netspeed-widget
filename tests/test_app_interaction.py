@@ -18,6 +18,86 @@ def _event(x_root=0, y_root=0):
     return SimpleNamespace(x_root=x_root, y_root=y_root)
 
 
+class _MeasuredFont:
+    """Small deterministic font stand-in for readout layout checks."""
+
+    def measure(self, text):
+        measured = {
+            "123.4": 32,
+            "45.6": 25,
+            "34 ms": 29,
+            "↓ 123.4": 35,
+            "↑ 45.6": 29,
+            "Mb/s": 26,
+            "Mb/s test": 48,
+        }
+        if text in measured:
+            return measured[text]
+        return len(text) * 7
+
+
+class _MeasuredCanvas:
+    def __init__(self, items):
+        self.items = items
+
+    def itemcget(self, item, key):
+        return self.items[item].get(key, "")
+
+    def itemconfigure(self, item, **kwargs):
+        self.items[item].update(kwargs)
+
+    def coords(self, item, *coords):
+        if coords:
+            self.items[item]["coords"] = list(coords)
+        return self.items[item].get("coords", [])
+
+
+class TestReadoutLayout:
+    def test_normal_readings_keep_units_and_stay_before_graph(self):
+        items = {
+            "down": {"text": "123.4"},
+            "up": {"text": "45.6"},
+            "ping": {"text": "34 ms"},
+            "unit": {"text": "Mb/s"},
+            "st_down": {"text": "↓ 123.4"},
+            "st_up": {"text": "↑ 45.6"},
+            "st_unit": {"text": "Mb/s test"},
+            "up_arrow": {},
+        }
+        widget = SimpleNamespace(
+            canvas=_MeasuredCanvas(items),
+            _last_layout_texts=(),
+            _t_down_val="down",
+            _t_up_val="up",
+            _t_ping="ping",
+            _t_unit="unit",
+            _t_st_down="st_down",
+            _t_st_up="st_up",
+            _t_st_unit="st_unit",
+            _t_up_arrow="up_arrow",
+            font_value=_MeasuredFont(),
+            font_ping=_MeasuredFont(),
+            font_unit=_MeasuredFont(),
+            font_mini=_MeasuredFont(),
+        )
+
+        widget._ellipsize = app_module.NetSpeedWidget._ellipsize
+        app_module.NetSpeedWidget._layout_readouts(widget)
+
+        assert items["unit"]["state"] == "normal"
+        assert items["st_unit"]["state"] == "normal"
+        assert items["down"]["text"] == "123.4"
+        assert items["up"]["text"] == "45.6"
+        assert items["st_down"]["text"] == "↓ 123.4"
+        assert items["st_up"]["text"] == "↑ 45.6"
+        assert items["unit"]["text"] == "Mb/s"
+        assert items["st_unit"]["text"] == "Mb/s test"
+        for item in ("ping", "unit", "st_up", "st_unit"):
+            x = items[item]["coords"][0]
+            width = widget.font_unit.measure(items[item]["text"])
+            assert x + width <= app_module.GRAPH_X0
+
+
 class TestWindowLifecycle:
     """Show, hide and toggle behavior."""
 
@@ -256,7 +336,7 @@ class TestSpeedtestReporting:
 
         assert config.get_speedtest()["down_mbps"] == 88.4
         assert widget._speedtest_summary == "Last speedtest: 88.4 D | 21.7 U Mb/s"
-        assert fake_gui.canvas.text_of(widget._t_st_unit) == "Mb/s speedtest"
+        assert fake_gui.canvas.text_of(widget._t_st_unit) == "Mb/s test"
         assert widget._speedtest_running is False
 
     def test_estimate_is_labelled_and_not_persisted(
@@ -273,7 +353,7 @@ class TestSpeedtestReporting:
 
         assert saved == []
         assert "estimate" in widget._speedtest_summary
-        assert fake_gui.canvas.text_of(widget._t_st_unit) == "Mb/s estimate"
+        assert fake_gui.canvas.text_of(widget._t_st_unit) == "Mb/s est."
 
     def test_failure_clears_the_running_latch(self, make_widget, monkeypatch):
         widget = make_widget()
@@ -440,15 +520,15 @@ class TestThemeSwitching:
             ]
 
         widget._popup_menu(SimpleNamespace(x_root=0, y_root=0))
-        assert "  Auto-hide on hover" in hover_labels()[-1]
+        assert "Auto-hide on hover" in hover_labels()[-1]
         assert fake_gui.menu.add_checkbutton.call_args.kwargs["indicatoron"] is False
 
         widget.toggle_hover_hide()  # tray action
-        assert "✓  Auto-hide on hover" in hover_labels()[-1]
+        assert "✓ Auto-hide on hover" in hover_labels()[-1]
 
         config.set_hide_on_hover(False)  # another process/UI changed the setting
         widget._popup_menu(SimpleNamespace(x_root=0, y_root=0))
-        assert "  Auto-hide on hover" in hover_labels()[-1]
+        assert "Auto-hide on hover" in hover_labels()[-1]
 
     def test_opacity_indicator_tracks_selection_and_current_value(
         self, make_widget, fake_gui
@@ -469,7 +549,7 @@ class TestThemeSwitching:
             for call in fake_gui.menu.entryconfig.call_args_list
             if call.kwargs.get("label", "").endswith("%")
         ]
-        assert "✓  80%" in opacity_choices
+        assert "✓ 80%" in opacity_choices
 
         widget._apply_theme("Light")
         widget._popup_menu(SimpleNamespace(x_root=0, y_root=0))
@@ -492,7 +572,7 @@ class TestThemeSwitching:
             ]
             return next(label for label in reversed(labels) if "✓" in label)
 
-        assert selected_label().strip() == "✓  Default"
+        assert selected_label().strip() == "✓ Default"
         assert all(
             call.kwargs["indicatoron"] is False
             for call in fake_gui.menu.add_radiobutton.call_args_list
@@ -500,7 +580,7 @@ class TestThemeSwitching:
 
         widget._apply_theme("Light")
 
-        assert selected_label().strip() == "✓  Light"
+        assert selected_label().strip() == "✓ Light"
         assert app_module.THEMES["Light"].fg != app_module.THEMES["Light"].surface
 
     def test_apply_theme_recolors_and_rebuilds_menu(

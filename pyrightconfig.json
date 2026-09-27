@@ -1,0 +1,37 @@
+{
+  "include": ["app.py", "utils", "tray", "tests", "build.py", "clean.py", "conftest.py"],
+  "exclude": ["**/__pycache__", ".venv", "third_party", "dist", "build"],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false,
+  "reportMissingImports": false,
+  "reportMissingModuleSource": false,
+  "reportUnusedImport": true,
+  "reportUnusedVariable": true,
+  "reportDuplicateImport": true,
+  "reportGeneralTypeIssues": true,
+  "reportAttributeAccessIssue": true,
+  "reportOptionalMemberAccess": true,
+  "reportArgumentType": true,
+  "reportOptionalSubscript": true,
+  "reportCallIssue": true,
+  "reportReturnType": true,
+  "reportOperatorIssue": true,
+  "executionEnvironments": [
+    {
+      "root": "tests",
+      "typeCheckingMode": "basic",
+      "reportArgumentType": false,
+      "reportAttributeAccessIssue": false,
+      "reportOptionalMemberAccess": false,
+      "reportOptionalSubscript": false,
+      "reportCallIssue": false
+    },
+    {
+      "root": "conftest.py",
+      "typeCheckingMode": "basic",
+      "reportArgumentType": false,
+      "reportCallIssue": false
+    }
+  ]
+}

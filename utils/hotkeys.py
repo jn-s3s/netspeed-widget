@@ -209,16 +209,16 @@ class GlobalHotkey:
             wnd_class = win32gui.WNDCLASS()
             # Unique per instance: RegisterClass fails when the name is
             # already taken in this process.
-            wnd_class.lpszClassName = f"NetSpeedWidgetHotkeySink{id(self):x}"
-            wnd_class.lpfnWndProc = {
+            wnd_class.lpszClassName = f"NetSpeedWidgetHotkeySink{id(self):x}"  # type: ignore[reportAttributeAccessIssue]
+            wnd_class.lpfnWndProc = {  # type: ignore[reportAttributeAccessIssue]
                 win32con.WM_HOTKEY: self._wm_hotkey,
                 win32con.WM_CLOSE: self._wm_close,
                 _WM_APPLY: self._wm_apply,
             }
-            self._class_atom = win32gui.RegisterClass(wnd_class)
+            self._class_atom = win32gui.RegisterClass(wnd_class)  # type: ignore[reportAttributeAccessIssue]
             self._hwnd = win32gui.CreateWindowEx(
                 0,
-                self._class_atom,
+                self._class_atom,  # type: ignore[reportArgumentType]
                 "NetSpeedHotkeySink",
                 0,
                 0,
@@ -250,7 +250,7 @@ class GlobalHotkey:
         if self._class_atom is None:
             return
         try:
-            win32gui.UnregisterClass(self._class_atom, win32api.GetModuleHandle(None))
+            win32gui.UnregisterClass(self._class_atom, win32api.GetModuleHandle(None))  # type: ignore[reportArgumentType]
         except pywintypes.error as err:
             _log.warning(f"could not unregister the hotkey window class: {err}")
         self._class_atom = None

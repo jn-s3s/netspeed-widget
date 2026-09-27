@@ -97,14 +97,14 @@ report.
 
 ## Development
 
-Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Install the dev tools once:
+Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Type checking uses [Pyright](https://microsoft.github.io/pyright/), configured in `pyrightconfig.json`. Install the dev tools once:
 
 ```powershell
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\pip install -r requirements-dev.txt
 ```
 
-Run both checks (same commands CI runs):
+Run all checks (same commands CI runs):
 
 ```powershell
 .\lint.ps1
@@ -117,9 +117,10 @@ Or call the tools directly:
 .venv\Scripts\ruff check --fix .    # lint and apply safe fixes
 .venv\Scripts\ruff format .         # format in place
 .venv\Scripts\ruff format --check . # verify formatting only
+.venv\Scripts\pyright               # type check
 ```
 
-`ruff check .` and `ruff format --check .` must both exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
+`ruff check .`, `ruff format --check .`, and `pyright` must all exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
 
 The test suite under `tests/` uses pytest. An autouse fixture repoints
 `APPDATA` at a temp directory, so no run ever touches your real
@@ -155,6 +156,7 @@ CI runs the same command on every push and pull request, and again before every 
 - `utils/paths.py` - resolves resource and state paths for source runs and PyInstaller builds.
 - `utils/logger.py` - levelled, subsystem-tagged logging with size-based rollover.
 - `utils/version.py` - the one place the app version is written.
+- `utils/menu_labels.py` - shared text formats for the widget and tray menus.
 - `utils/format.py` - shared number formatting.
 - `tray/container.py` - the system tray icon and menu.
 - `build.py` and `clean.py` - packaging helpers.
