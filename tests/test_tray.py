@@ -11,6 +11,7 @@ from PIL import UnidentifiedImageError
 
 from tray.container import TrayController, _opacity_label
 from utils import config
+from utils.theme import THEMES
 
 
 @pytest.fixture
@@ -110,6 +111,28 @@ class TestMenuRouting:
         checked = [item.text for item in submenu.submenu.items if item.checked]
 
         assert checked == ["80%"]
+
+    def test_theme_submenu_offers_presets_with_live_selected_state(
+        self, tray, monkeypatch
+    ):
+        selected = ["Ocean"]
+        monkeypatch.setattr("tray.container.get_theme", lambda: selected[0])
+
+        theme_item = tray._build_menu().items[2]
+        assert theme_item.text == "Theme"
+        assert [item.text for item in theme_item.submenu.items] == list(THEMES)
+
+        submenu = tray._theme_submenu().submenu
+        assert [item.text for item in submenu.items] == list(THEMES)
+        assert [item.text for item in submenu.items if item.checked] == ["Ocean"]
+
+        selected[0] = "Light"
+        assert [item.text for item in submenu.items if item.checked] == ["Light"]
+
+    def test_theme_selection_dispatches_through_app_api(self, tray, app):
+        tray._on_set_theme("Aurora")()
+
+        app.set_theme.assert_called_once_with("Aurora")
 
     def test_the_speedtest_item_disables_itself_while_one_runs(self, tray):
         item = tray._build_menu().items[1]

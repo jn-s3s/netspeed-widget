@@ -5,6 +5,7 @@ persisted state, which is the behavior a regression could actually break.
 """
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -356,12 +357,13 @@ class TestTickLoop:
         widget._render_latency()
 
         assert fake_gui.canvas.text_of(widget._t_ping) == f"{ms:.0f} ms"
+        palette = app_module.THEMES["Default"]
         expected_color = {
-            20: app_module.GOOD_COLOR,
-            120: app_module.WARN_COLOR,
-            400: app_module.BAD_COLOR,
+            20: palette.down,
+            120: palette.warn,
+            400: palette.bad,
         }[ms]
-        expected_up_color = app_module.UP_COLOR if ms == 20 else expected_color
+        expected_up_color = palette.up if ms == 20 else expected_color
         assert fake_gui.canvas.items[widget._t_down_val]["fill"] == expected_color
         assert fake_gui.canvas.items[widget._t_up_val]["fill"] == expected_up_color
         assert fake_gui.canvas.items[widget._t_up_arrow]["fill"] == expected_up_color
@@ -373,8 +375,208 @@ class TestTickLoop:
 
         widget._render_latency()
 
+        bad_color = app_module.THEMES["Default"].bad
         assert fake_gui.canvas.text_of(widget._t_ping) == "offline"
-        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == app_module.BAD_COLOR
-        assert fake_gui.canvas.items[widget._t_up_val]["fill"] == app_module.BAD_COLOR
-        assert fake_gui.canvas.items[widget._t_up_arrow]["fill"] == app_module.BAD_COLOR
-        assert fake_gui.canvas.items[widget._t_st_up]["fill"] == app_module.BAD_COLOR
+        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == bad_color
+        assert fake_gui.canvas.items[widget._t_up_val]["fill"] == bad_color
+        assert fake_gui.canvas.items[widget._t_up_arrow]["fill"] == bad_color
+        assert fake_gui.canvas.items[widget._t_st_up]["fill"] == bad_color
+
+    def test_pending_measurement_reads_dim(self, make_widget, fake_gui):
+        """TCP has no number yet while the ICMP second opinion still answers.
+
+        This is the widget's state for the first seconds of every run, and the
+        one path where the readout color and the recorded health differ, so it
+        must not feed a resolved palette color back into the health lookup.
+        """
+        widget = make_widget()
+        widget.probe.latest = SimpleNamespace(ok=True, ms=None, ts=0.0)
+
+        widget._render_latency()
+
+        palette = app_module.THEMES["Default"]
+        assert fake_gui.canvas.text_of(widget._t_ping) == "-- ms"
+        assert fake_gui.canvas.items[widget._t_ping]["fill"] == palette.fg_dim
+        assert fake_gui.canvas.items[widget._dot_item]["fill"] == palette.warn
+        assert widget._health == app_module.Health.WARN
+
+    def test_speedtest_run_freezes_health_recording(
+        self, make_widget, fake_gui, monkeypatch
+    ):
+        """A running speedtest must not record its inflated latency as health.
+
+        The test saturates the connection, so 400 ms of probe latency is an
+        artifact, not an outage: `_record_status` must be skipped entirely and
+        the rows must keep the color they had before the test started.
+        """
+        widget = make_widget()
+        widget._speedtest_running = True
+        widget.probe.latest = SimpleNamespace(ok=True, ms=400.0, ts=0.0)
+        recorded = []
+        monkeypatch.setattr(
+            widget, "_record_status", lambda *_a: recorded.append(1) or False
+        )
+
+        widget._render_latency()
+
+        assert recorded == []
+        assert fake_gui.canvas.text_of(widget._t_ping) == "test..."
+        palette = app_module.THEMES["Default"]
+        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == palette.down
+        assert fake_gui.canvas.items[widget._dot_item]["fill"] != palette.bad
+
+
+class TestThemeSwitching:
+    """A theme change repaints the widget, persists and rebuilds the menu."""
+
+    def test_hover_indicator_tracks_menu_and_tray_changes(self, make_widget, fake_gui):
+        widget = make_widget()
+
+        def hover_labels():
+            return [
+                call.kwargs["label"]
+                for call in fake_gui.menu.entryconfig.call_args_list
+                if "Auto-hide on hover" in call.kwargs.get("label", "")
+            ]
+
+        widget._popup_menu(SimpleNamespace(x_root=0, y_root=0))
+        assert "  Auto-hide on hover" in hover_labels()[-1]
+        assert fake_gui.menu.add_checkbutton.call_args.kwargs["indicatoron"] is False
+
+        widget.toggle_hover_hide()  # tray action
+        assert "✓  Auto-hide on hover" in hover_labels()[-1]
+
+        config.set_hide_on_hover(False)  # another process/UI changed the setting
+        widget._popup_menu(SimpleNamespace(x_root=0, y_root=0))
+        assert "  Auto-hide on hover" in hover_labels()[-1]
+
+    def test_opacity_indicator_tracks_selection_and_current_value(
+        self, make_widget, fake_gui
+    ):
+        widget = make_widget()
+
+        widget.set_opacity(0.8)
+        fake_gui.root.run_after()
+
+        labels = [
+            call.kwargs["label"]
+            for call in fake_gui.menu.entryconfig.call_args_list
+            if "Opacity (" in call.kwargs.get("label", "")
+        ]
+        assert labels[-1] == "Opacity (80%)"
+        opacity_choices = [
+            call.kwargs["label"]
+            for call in fake_gui.menu.entryconfig.call_args_list
+            if call.kwargs.get("label", "").endswith("%")
+        ]
+        assert "✓  80%" in opacity_choices
+
+        widget._apply_theme("Light")
+        widget._popup_menu(SimpleNamespace(x_root=0, y_root=0))
+        labels = [
+            call.kwargs["label"]
+            for call in fake_gui.menu.entryconfig.call_args_list
+            if "Opacity (" in call.kwargs.get("label", "")
+        ]
+        assert labels[-1] == "Opacity (80%)"
+
+    def test_theme_menu_marks_selected_entry_in_light_and_dark_palettes(
+        self, make_widget, fake_gui
+    ):
+        widget = make_widget()
+
+        def selected_label():
+            labels = [
+                call.kwargs["label"]
+                for call in fake_gui.menu.add_radiobutton.call_args_list
+            ]
+            return next(label for label in reversed(labels) if "✓" in label)
+
+        assert selected_label().strip() == "✓  Default"
+        assert all(
+            call.kwargs["indicatoron"] is False
+            for call in fake_gui.menu.add_radiobutton.call_args_list
+        )
+
+        widget._apply_theme("Light")
+
+        assert selected_label().strip() == "✓  Light"
+        assert app_module.THEMES["Light"].fg != app_module.THEMES["Light"].surface
+
+    def test_apply_theme_recolors_and_rebuilds_menu(
+        self, make_widget, fake_gui, monkeypatch
+    ):
+        widget = make_widget()
+        builds = []
+        original_build = widget._build_menu
+        monkeypatch.setattr(
+            widget, "_build_menu", lambda: builds.append(1) or original_build()
+        )
+        old_pill_fill = fake_gui.canvas.items[widget._pill]["fill"]
+
+        widget._apply_theme("Ocean")
+
+        assert builds == [1]
+        assert widget._theme_name == "Ocean"
+        assert config.get_theme() == "Ocean"
+        assert (
+            fake_gui.canvas.items[widget._pill]["fill"]
+            == app_module.THEMES["Ocean"].surface
+        )
+        assert old_pill_fill != app_module.THEMES["Ocean"].surface
+
+    def test_apply_unknown_theme_is_ignored(self, make_widget, fake_gui, monkeypatch):
+        widget = make_widget()
+        builds = []
+        original_build = widget._build_menu
+        monkeypatch.setattr(
+            widget, "_build_menu", lambda: builds.append(1) or original_build()
+        )
+
+        widget._apply_theme("No Such Theme")
+
+        assert builds == []
+        assert widget._theme_name == "Default"
+        assert config.get_theme() == "Default"
+
+    def test_public_theme_change_marshals_and_refreshes_tray(
+        self, make_widget, monkeypatch
+    ):
+        widget = make_widget()
+        tray = MagicMock()
+        widget.attach_tray(tray)
+
+        widget.set_theme("Ocean")
+
+        assert widget._theme_name == "Default"
+        widget.root.run_after()
+        assert widget._theme_name == "Ocean"
+        tray.update_settings.assert_called_once_with()
+
+    def test_status_dot_is_painted_at_startup(self, make_widget, fake_gui):
+        """A fresh widget shows its health color immediately, not after a tick."""
+        widget = make_widget()
+
+        assert (
+            fake_gui.canvas.items[widget._dot_item]["fill"]
+            == app_module.THEMES["Default"].good
+        )
+
+    @pytest.mark.parametrize("rounded", [True, False])
+    def test_theme_switch_repaints_the_canvas_background(
+        self, make_widget, fake_gui, rounded
+    ):
+        """The flat fallback paints its surface on the canvas, not just the pill.
+
+        Where the transparency key is unavailable the canvas background is the
+        only surface behind the pill, so a stale one shows through at the edges.
+        """
+        widget = make_widget()
+        widget._rounded = rounded
+
+        widget._apply_theme("Ocean")
+
+        expected = (
+            app_module.TRANSPARENT if rounded else app_module.THEMES["Ocean"].surface
+        )
+        assert fake_gui.canvas.config["bg"] == expected

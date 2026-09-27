@@ -241,3 +241,33 @@ class TestValidation:
         _write_raw(json.dumps({"hotkey": 42}))
 
         assert config.get_hotkey() == config.DEFAULT_HOTKEY
+
+
+class TestThemePresets:
+    """Theme choice validation: unknown names degrade, bad types are rejected."""
+
+    def test_unknown_theme_name_falls_back_to_default(self, spy):
+        _write_raw(json.dumps({"theme": "Neon Rainbow"}))
+
+        assert config.get_theme() == config.DEFAULT_THEME
+
+    def test_missing_theme_returns_default(self):
+        assert config.get_theme() == config.DEFAULT_THEME
+
+    def test_non_string_theme_falls_back_to_default(self, spy):
+        _write_raw(json.dumps({"theme": 42}))
+
+        assert config.get_theme() == config.DEFAULT_THEME
+
+    def test_known_theme_round_trips(self):
+        config.set_theme("Ocean")
+
+        assert config.get_theme() == "Ocean"
+
+    def test_set_theme_rejects_an_unknown_name(self):
+        with pytest.raises(ValueError):
+            config.set_theme("Neon Rainbow")
+
+    def test_set_theme_rejects_a_non_string(self):
+        with pytest.raises(ValueError):
+            config.set_theme(42)

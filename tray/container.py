@@ -1,8 +1,8 @@
 """System tray integration built on pystray.
 
 The icon runs on a daemon thread so the Tk main loop stays free. Menu actions
-are forwarded to the app through `ui_call`, except `set_opacity`, which
-marshals itself; the app is reached only through the `WidgetActions` protocol
+are forwarded to the app through `ui_call`, except `set_opacity` and `set_theme`,
+which marshal themselves; the app is reached only through the `WidgetActions` protocol
 below, never through its window, so the tray cannot touch Tk state it does
 not own.
 
@@ -19,9 +19,10 @@ from typing import Protocol
 from PIL import Image, UnidentifiedImageError
 from pystray import Icon, Menu, MenuItem
 
-from utils.config import OPACITY_LEVELS, get_hide_on_hover, get_opacity
+from utils.config import OPACITY_LEVELS, get_hide_on_hover, get_opacity, get_theme
 from utils.logger import get
 from utils.paths import icon_path
+from utils.theme import THEMES
 
 _log = get("tray")
 
@@ -39,6 +40,7 @@ class WidgetActions(Protocol):
     def open_hotkey_dialog(self) -> None: ...
     def run_speedtest_now(self, manual: bool = ...) -> None: ...
     def set_opacity(self, value: float) -> None: ...
+    def set_theme(self, name: str) -> None: ...
     def shutdown(self) -> None: ...
 
 
@@ -89,6 +91,7 @@ class TrayController:
                 self._on_check_speedtest,
                 enabled=lambda *_: not self._speedtest_check,
             ),
+            self._theme_submenu(),
             self._opacity_submenu(),
             MenuItem(
                 "Auto-hide on hover",
@@ -144,6 +147,10 @@ class TrayController:
         self._live_status = status or ""
         self._refresh_title()
 
+    def update_settings(self) -> None:
+        """Refresh checked menu items after settings change in the app."""
+        self._refresh_menu()
+
     def start_speedtest_check(self) -> None:
         """Mark a speedtest as running and disable the menu action."""
         if self._speedtest_check:
@@ -198,6 +205,26 @@ class TrayController:
                 )
             ),
         )
+
+    def _theme_submenu(self) -> MenuItem:
+        """Build theme choices with a live check on the persisted selection."""
+        return MenuItem(
+            "Theme",
+            Menu(
+                *(
+                    MenuItem(
+                        name,
+                        self._on_set_theme(name),
+                        checked=lambda *_a, theme=name: get_theme() == theme,
+                    )
+                    for name in THEMES
+                )
+            ),
+        )
+
+    def _on_set_theme(self, name: str):
+        """Return the handler that asks the app to switch themes safely."""
+        return lambda *_a: self.app.set_theme(name)
 
     def _on_set_opacity(self, level: float):
         """Return the handler that asks the app to change opacity.
