@@ -19,6 +19,7 @@ from typing import Protocol
 
 from PIL import Image, UnidentifiedImageError
 from pystray import Icon, Menu, MenuItem
+from pystray._base import Icon as IconType
 
 from utils.config import OPACITY_LEVELS, get_hide_on_hover, get_opacity, get_theme
 from utils.logger import get
@@ -99,7 +100,7 @@ class TrayController:
         """
         self.app = app
         self.app_name = app_name
-        self._icon: Icon | None = None
+        self._icon: IconType | None = None
         self._icon_lock = threading.Lock()
         self.thread: threading.Thread | None = None
         self._speedtest_check = False
@@ -108,7 +109,7 @@ class TrayController:
         self._last_session_refresh: float = 0.0
 
     @property
-    def icon(self) -> Icon | None:
+    def icon(self) -> IconType | None:
         """The live pystray icon, or None once the tray has stopped."""
         with self._icon_lock:
             return self._icon
@@ -132,7 +133,7 @@ class TrayController:
             MenuItem(
                 "Run speedtest",
                 self._on_run_speedtest,
-                enabled=lambda *_: not self._speedtest_check,
+                enabled=lambda *_: not self._speedtest_check,  # pyright: ignore[reportArgumentType]
             ),
             MenuItem(self._session_label, None, enabled=False),
             MenuItem(self._last_speedtest_label, None, enabled=False),
