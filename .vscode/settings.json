@@ -9,9 +9,7 @@
   },
   "ruff.lineLength": 88,
   "ruff.targetVersion": "py311",
-  "python.analysis.typeCheckingMode": "basic",
   "python.analysis.pythonVersion": "3.11",
-  "python.analysis.exclude": ["**/__pycache__", ".venv", "third_party", "dist", "build"],
   "files.exclude": {
     "**/__pycache__": true
   }

@@ -1,5 +1,13 @@
 {
-  "include": ["app.py", "utils", "tray", "tests", "build.py", "clean.py", "conftest.py"],
+  "include": [
+    "app.py",
+    "utils",
+    "tray",
+    "tests",
+    "build.py",
+    "clean.py",
+    "conftest.py"
+  ],
   "exclude": ["**/__pycache__", ".venv", "third_party", "dist", "build"],
   "pythonVersion": "3.11",
   "typeCheckingMode": "basic",
@@ -20,7 +28,6 @@
   "executionEnvironments": [
     {
       "root": "tests",
-      "typeCheckingMode": "basic",
       "reportArgumentType": false,
       "reportAttributeAccessIssue": false,
       "reportOptionalMemberAccess": false,
@@ -29,7 +36,6 @@
     },
     {
       "root": "conftest.py",
-      "typeCheckingMode": "basic",
       "reportArgumentType": false,
       "reportCallIssue": false
     }
