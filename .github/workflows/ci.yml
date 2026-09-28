@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint, format and test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Pyright type check
+        run: pyright
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+  changelog-gate:
+    name: Changelog gate
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Verify changelog has a fresh version
+        run: |
+          $content = Get-Content -Raw CHANGELOG.md
+
+          $unreleased = [regex]::Match($content, '(?ms)^## \[Unreleased\]\r?\n(.*?)(?=^## \[)')
+          if (-not $unreleased.Success) {
+              throw "CHANGELOG.md has no ## [Unreleased] section."
+          }
+          if ($unreleased.Groups[1].Value.Trim()) {
+              throw "## [Unreleased] must be empty before merging to main; run the changelog update first."
+          }
+
+          $versionMatch = [regex]::Match($content, '(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}')
+          if (-not $versionMatch.Success) {
+              throw "No dated version section found in CHANGELOG.md."
+          }
+          $version = $versionMatch.Groups[1].Value
+
+          # The packaged APP_VERSION must equal the changelog version.
+          $appVersion = python -c "from utils.version import APP_VERSION; print(APP_VERSION)"
+          if ($LASTEXITCODE -ne 0 -or -not $appVersion) {
+              throw "Could not read APP_VERSION from utils/version.py (python exited $LASTEXITCODE)."
+          }
+          $appVersion = $appVersion.Trim()
+          if ($appVersion -ne $version) {
+              throw "CHANGELOG.md releases v$version but utils/version.APP_VERSION is $appVersion; bump the constant to v$version or retitle the section to v$appVersion before merging to main."
+          }
+
+          # Refresh tags first: the checkout's tag refs can be stale or missing.
+          git fetch --tags --force
+          if (git tag --list "v$version") {
+              throw "Tag v$version already exists; CHANGELOG.md has no new version to release."
+          }
+
+          # [version] casts compare numerically; a string compare would misorder.
+          # The glob also matches suffix tags like v0.0.0-test, which cannot be
+          # cast, so keep only plain vX.Y.Z tags. release.yml skips pre-releases
+          # the same way when it picks the previous tag for the compare link.
+          $latestTag = git tag --list "v*.*.*" --sort=-v:refname |
+              Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+              Select-Object -First 1
+          if ($latestTag -and ([version]$version -le [version]$latestTag.TrimStart('v'))) {
+              throw "Changelog version v$version is not newer than the latest tag $latestTag."
+          }
+
+          Write-Host "Changelog gate passed: v$version is ready to release."

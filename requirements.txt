@@ -1,5 +1,50 @@
-pyinstaller
-psutil
-pystray
-speedtest-cli
-pywin32>=306
+# Runtime and packaging dependencies for NetSpeed Widget.
+#
+# Every entry is pinned to an exact version and carries the sha256 of the
+# wheel it resolved to, so `pip install -r requirements.txt` verifies what it
+# downloads instead of trusting the index at build time. The released exe is
+# built from this file, so an update has to be deliberate and reviewable.
+#
+# Regenerate after changing a version, on Windows, for both interpreters CI
+# and releases target:
+#
+#   python -m pip download pyinstaller psutil pystray speedtest-cli pywin32 \
+#     --dest wheels --only-binary=:all: --implementation cp \
+#     --platform win_amd64 --python-version 311
+#
+# ...repeat for 312, then sha256 each wheel and list it under its pinned
+# name. The hashes below cover CPython 3.11 and 3.12 on win_amd64; another
+# interpreter or platform needs its own resolution, so pip reports a missing
+# hash rather than installing something this file never approved.
+#
+# Direct dependencies: pyinstaller, psutil, pystray, speedtest-cli, pywin32.
+# The rest are their transitive closure, which hash mode requires in full.
+
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+packaging==26.3 \
+    --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+pillow==12.3.0 \
+    --hash=sha256:8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a \
+    --hash=sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09
+psutil==7.2.2 \
+    --hash=sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988
+pyinstaller==6.22.3 \
+    --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b
+pyinstaller-hooks-contrib==2026.7 \
+    --hash=sha256:24257a04c7a5a7a034cf28e39dcee20fbeeb9f043076729480f2e1b69904408a
+pystray==0.19.5 \
+    --hash=sha256:a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617
+pywin32==312 \
+    --hash=sha256:b457f6d628a47e8a7346ce22acb7e1a46a4a78b52e1d17e1af56871bd19a93bc \
+    --hash=sha256:d11417d84412f859b722fad0841b3614459ed0047f7542d8362e77884f6b6e8a
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+setuptools==84.0.0 \
+    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+speedtest-cli==2.1.3 \
+    --hash=sha256:75ff32c91af9ac1ce2b905476d6e92bd9eb2c0783f9e7d1939d74605c7d0b9ea
