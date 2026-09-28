@@ -21,6 +21,7 @@ from typing import Any, TypedDict
 
 from utils.logger import get
 from utils.paths import config_path
+from utils.theme import DEFAULT_THEME, THEMES
 
 CONFIG_FILE = "config.json"
 MIN_OPACITY = 0.40
@@ -228,3 +229,17 @@ def get_hotkey(default: str = DEFAULT_HOTKEY) -> str:
 def set_hotkey(combo: str) -> None:
     """Persist the global show/hide hotkey combo."""
     _mutate("hotkey", combo)
+
+
+def get_theme() -> str:
+    """Return the saved preset name or Default when missing or invalid."""
+    with _lock:
+        value = load_config().get("theme")
+    return value if isinstance(value, str) and value in THEMES else DEFAULT_THEME
+
+
+def set_theme(name: str) -> None:
+    """Save a known theme preset; raise ValueError for unknown names."""
+    if not isinstance(name, str) or name not in THEMES:
+        raise ValueError(f"unknown theme preset: {name!r}")
+    _mutate("theme", name)

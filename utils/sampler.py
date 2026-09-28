@@ -106,7 +106,7 @@ class NetSampler:
         previous reading; without the clamp the widget would briefly show
         negative speeds and the session totals would shrink.
         """
-        if self._last_ts is None:
+        if self._last_ts is None or self._last_sent is None or self._last_recv is None:
             self._last_sent = bytes_sent
             self._last_recv = bytes_recv
             self._last_ts = now

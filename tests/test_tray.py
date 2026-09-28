@@ -8,14 +8,23 @@ from unittest.mock import MagicMock
 
 import pytest
 from PIL import UnidentifiedImageError
+from pystray import Menu
 
-from tray.container import TrayController, _opacity_label
+from tray.container import TrayController
 from utils import config
+from utils.menu_labels import opacity_choice_text
+from utils.theme import THEMES
 
 
 @pytest.fixture
 def app():
-    return MagicMock()
+    tray_state = MagicMock()
+    # Attribute values the dynamic menu labels read through WidgetActions.
+    tray_state.session_totals = (0.0, 0.0)
+    tray_state.speedtest_summary = ""
+    tray_state.hotkey_ok = False
+    tray_state.hotkey_combo = ""
+    return tray_state
 
 
 @pytest.fixture
@@ -85,7 +94,7 @@ class TestMenuRouting:
         app.ui_call.assert_called_once_with(app.open_hotkey_dialog)
         app.ui_call.reset_mock()
 
-        tray._on_check_speedtest()
+        tray._on_run_speedtest()
         app.ui_call.assert_called_once_with(app.run_speedtest_now, manual=True)
 
     def test_opacity_is_applied_directly_because_it_marshals_itself(self, tray, app):
@@ -99,7 +108,7 @@ class TestMenuRouting:
         submenu = tray._opacity_submenu()
         labels = [item.text for item in submenu.submenu.items]
 
-        assert labels == [_opacity_label(level) for level in config.OPACITY_LEVELS]
+        assert labels == [opacity_choice_text(level) for level in config.OPACITY_LEVELS]
         assert labels[0] == "100%"
 
     def test_exactly_one_opacity_entry_is_checked(self, tray, monkeypatch):
@@ -111,18 +120,48 @@ class TestMenuRouting:
 
         assert checked == ["80%"]
 
+    def test_theme_submenu_offers_presets_with_live_selected_state(
+        self, tray, monkeypatch
+    ):
+        selected = ["Ocean"]
+        monkeypatch.setattr("tray.container.get_theme", lambda: selected[0])
+
+        theme_item = next(
+            item for item in tray._build_menu().items if item.text == "Theme"
+        )
+        assert theme_item.text == "Theme"
+        assert [item.text for item in theme_item.submenu.items] == list(THEMES)
+
+        submenu = tray._theme_submenu().submenu
+        assert [item.text for item in submenu.items] == list(THEMES)
+        assert [item.text for item in submenu.items if item.checked] == ["Ocean"]
+
+        selected[0] = "Light"
+        assert [item.text for item in submenu.items if item.checked] == ["Light"]
+
+    def test_theme_selection_dispatches_through_app_api(self, tray, app):
+        tray._on_set_theme("Aurora")()
+
+        app.set_theme.assert_called_once_with("Aurora")
+
     def test_the_speedtest_item_disables_itself_while_one_runs(self, tray):
-        item = tray._build_menu().items[1]
-        assert item.enabled is True
+        def speedtest_item():
+            return next(
+                item
+                for item in tray._build_menu().items
+                if item.text == "Run speedtest"
+            )
+
+        assert speedtest_item().enabled is True
 
         tray.start_speedtest_check()
-        item = tray._build_menu().items[1]
+        item = speedtest_item()
 
         assert item.enabled is False
         assert tray._speedtest_check is True
 
         tray.stop_speedtest_check()
-        assert tray._build_menu().items[1].enabled is True
+        assert speedtest_item().enabled is True
 
     def test_quit_stops_the_tray_then_shuts_the_app_down(self, tray, app):
         tray._icon = MagicMock()
@@ -131,18 +170,75 @@ class TestMenuRouting:
 
         app.ui_call.assert_called_once_with(app.shutdown)
 
+    def test_the_menu_mirrors_the_widget_context_menu(self, tray, monkeypatch):
+        """Item order, labels and separators match the widget menu exactly."""
+        monkeypatch.setattr("tray.container.get_hide_on_hover", lambda: False)
+        monkeypatch.setattr("tray.container.get_opacity", lambda: 1.0)
+
+        menu = tray._build_menu()
+        labels = [item.text for item in menu.items if item is not Menu.SEPARATOR]
+
+        assert labels == [
+            "Run speedtest",
+            "Session: 0.0 MB down, 0.0 MB up",
+            "Last speedtest: --",
+            "Theme",
+            "Opacity (100%)",
+            "Auto-hide on hover",
+            "Set hotkey (none active)",
+            "Reset position",
+            "Hide",
+            "Quit",
+        ]
+        assert Menu.SEPARATOR in menu.items
+
+    def test_hotkey_label_tracks_registration_state(self, tray, app):
+        app.hotkey_ok = True
+        app.hotkey_combo = "ctrl+shift+n"
+
+        item = tray._build_menu().items[6]
+
+        assert item.text == "Change hotkey (Ctrl+Shift+N)"
+
+        app.hotkey_ok = False
+        assert tray._build_menu().items[6].text == "Set hotkey (none active)"
+
+    def test_auto_hide_label_carries_the_text_checkmark(self, tray, monkeypatch):
+        monkeypatch.setattr("tray.container.get_hide_on_hover", lambda: True)
+        assert tray._build_menu().items[5].text == "✓ Auto-hide on hover"
+
+        monkeypatch.setattr("tray.container.get_hide_on_hover", lambda: False)
+        assert tray._build_menu().items[5].text == "Auto-hide on hover"
+
+    def test_opacity_submenu_label_shows_the_current_percent(self, tray, monkeypatch):
+        monkeypatch.setattr("tray.container.get_opacity", lambda: 0.8)
+
+        assert tray._opacity_submenu().text == "Opacity (80%)"
+
 
 class TestStatusDisplay:
-    def test_status_line_is_empty_until_something_arrives(self, tray):
-        assert tray._menu_status_text() == "No data yet"
+    def test_session_line_reads_the_app_totals(self, tray, app):
+        app.session_totals = (123.4, 56.7)
 
-    def test_live_speeds_and_summary_are_joined(self, tray):
-        tray.update_live_status("D 1.0 Mb/s | U 0.2 Mb/s | 30 ms")
-        tray.update_speedtest_summary("Speedtest: 90.0 D | 20.0 U")
+        item = tray._build_menu().items[1]
 
-        assert tray._menu_status_text() == (
-            "Speedtest: 90.0 D | 20.0 U | D 1.0 Mb/s | U 0.2 Mb/s | 30 ms"
-        )
+        assert item.text == "Session: 123.4 MB down, 56.7 MB up"
+        assert item.enabled is False
+
+    def test_last_speedtest_line_falls_back_until_a_result_exists(self, tray, app):
+        app.speedtest_summary = ""
+
+        item = tray._build_menu().items[2]
+
+        assert item.text == "Last speedtest: --"
+        assert item.enabled is False
+
+    def test_last_speedtest_line_shows_the_latest_summary(self, tray, app):
+        app.speedtest_summary = "Last speedtest: 88.4 D | 21.7 U Mb/s"
+
+        item = tray._build_menu().items[2]
+
+        assert item.text == "Last speedtest: 88.4 D | 21.7 U Mb/s"
 
     def test_the_tooltip_leads_with_the_app_name(self, tray):
         icon = MagicMock()

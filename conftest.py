@@ -52,6 +52,7 @@ class FakeCanvas:
     def __init__(self, *_args, **_kwargs):
         self.items: dict[int, dict] = {}
         self._next_id = 1
+        self.config: dict[str, object] = {}
         self.deleted_tags: list[str] = []
         self.handlers: dict[str, object] = {}
 
@@ -79,8 +80,26 @@ class FakeCanvas:
     def itemconfig(self, item_id: int, **kwargs) -> None:
         self.items.setdefault(item_id, {"kind": "unknown"}).update(kwargs)
 
+    def itemcget(self, item_id: int, key: str) -> str:
+        """Read a stored option, defaulting to "" like Tk does."""
+        return str(self.items.get(item_id, {}).get(key, ""))
+
+    def coords(self, item_id: int, *coords) -> list:
+        """Record a position when given one, otherwise read the stored one."""
+        if coords:
+            self.items.setdefault(item_id, {"kind": "unknown"})["coords"] = list(coords)
+        return self.items.get(item_id, {}).get("coords", [])
+
+    def itemconfigure(self, item_id: int, **kwargs) -> None:
+        """Alias of itemconfig, used by the readout layout step."""
+        self.items.setdefault(item_id, {"kind": "unknown"}).update(kwargs)
+
     def delete(self, tag: str) -> None:
         self.deleted_tags.append(tag)
+
+    def configure(self, **kwargs) -> None:
+        """Record whole-widget options so a test can read the current ones."""
+        self.config.update(kwargs)
 
     def pack(self, **_kwargs) -> None:
         return None
@@ -190,10 +209,12 @@ def fake_gui(monkeypatch):
     menu = MagicMock()
     menu.index.return_value = 1
     font = MagicMock()
+    font.measure.return_value = 0
 
     monkeypatch.setattr(app_module.tk, "Canvas", lambda *a, **k: canvas)
     monkeypatch.setattr(app_module.tk, "Menu", lambda *a, **k: menu)
     monkeypatch.setattr(app_module.tk, "BooleanVar", FakeVar)
+    monkeypatch.setattr(app_module.tk, "StringVar", FakeVar)
     monkeypatch.setattr(app_module.tkfont, "Font", lambda *a, **k: font)
     monkeypatch.setattr(app_module, "LatencyProbe", MagicMock())
     return SimpleNamespace(root=root, canvas=canvas, menu=menu, font=font)

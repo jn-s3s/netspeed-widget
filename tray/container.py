@@ -1,8 +1,8 @@
 """System tray integration built on pystray.
 
 The icon runs on a daemon thread so the Tk main loop stays free. Menu actions
-are forwarded to the app through `ui_call`, except `set_opacity`, which
-marshals itself; the app is reached only through the `WidgetActions` protocol
+are forwarded to the app through `ui_call`, except `set_opacity` and `set_theme`,
+which marshal themselves; the app is reached only through the `WidgetActions` protocol
 below, never through its window, so the tray cannot touch Tk state it does
 not own.
 
@@ -13,15 +13,26 @@ dereference an icon that has just been dropped.
 """
 
 import threading
+import time
 from collections.abc import Callable
 from typing import Protocol
 
 from PIL import Image, UnidentifiedImageError
 from pystray import Icon, Menu, MenuItem
+from pystray._base import Icon as IconType
 
-from utils.config import OPACITY_LEVELS, get_hide_on_hover, get_opacity
+from utils.config import OPACITY_LEVELS, get_hide_on_hover, get_opacity, get_theme
 from utils.logger import get
+from utils.menu_labels import (
+    auto_hide_label,
+    hotkey_label,
+    opacity_choice_text,
+    opacity_percent_label,
+    session_label,
+    speedtest_label,
+)
 from utils.paths import icon_path
+from utils.theme import THEMES
 
 _log = get("tray")
 
@@ -39,7 +50,42 @@ class WidgetActions(Protocol):
     def open_hotkey_dialog(self) -> None: ...
     def run_speedtest_now(self, manual: bool = ...) -> None: ...
     def set_opacity(self, value: float) -> None: ...
+    def set_theme(self, name: str) -> None: ...
     def shutdown(self) -> None: ...
+
+    @property
+    def session_totals(self) -> tuple[float, float]:
+        """Cumulative transfer this session.
+
+        Lock-protected in NetSampler; safe to read from any thread.
+        """
+        ...
+
+    @property
+    def hotkey_combo(self) -> str:
+        """Active hotkey combo.
+
+        Set on Tk thread; GIL-atomic read from tray thread
+        (may lag one update).
+        """
+        ...
+
+    @property
+    def hotkey_ok(self) -> bool:
+        """Whether the hotkey is registered.
+
+        Set on Tk thread; GIL-atomic read from tray thread.
+        """
+        ...
+
+    @property
+    def speedtest_summary(self) -> str:
+        """Last speedtest line.
+
+        Set on Tk thread; GIL-atomic read from tray thread
+        (may lag one update).
+        """
+        ...
 
 
 class TrayController:
@@ -54,15 +100,16 @@ class TrayController:
         """
         self.app = app
         self.app_name = app_name
-        self._icon: Icon | None = None
+        self._icon: IconType | None = None
         self._icon_lock = threading.Lock()
         self.thread: threading.Thread | None = None
         self._speedtest_check = False
         self._speedtest_summary = ""
         self._live_status = ""
+        self._last_session_refresh: float = 0.0
 
     @property
-    def icon(self) -> Icon | None:
+    def icon(self) -> IconType | None:
         """The live pystray icon, or None once the tray has stopped."""
         with self._icon_lock:
             return self._icon
@@ -81,26 +128,41 @@ class TrayController:
         _log.info("system tray started")
 
     def _build_menu(self) -> Menu:
-        """Assemble the tray menu with its dynamic status and checked states."""
+        """Assemble the tray menu mirroring the widget's context menu."""
         return Menu(
-            MenuItem(lambda *_: self._menu_status_text(), None, enabled=False),
             MenuItem(
-                "Check speedtest",
-                self._on_check_speedtest,
-                enabled=lambda *_: not self._speedtest_check,
+                "Run speedtest",
+                self._on_run_speedtest,
+                enabled=lambda *_: not self._speedtest_check,  # pyright: ignore[reportArgumentType]
             ),
+            MenuItem(self._session_label, None, enabled=False),
+            MenuItem(self._last_speedtest_label, None, enabled=False),
+            self._theme_submenu(),
             self._opacity_submenu(),
-            MenuItem(
-                "Auto-hide on hover",
-                self._on_toggle_hover_hide,
-                checked=lambda *_: get_hide_on_hover(),
-            ),
-            MenuItem("Change hotkey...", self._on_change_hotkey),
+            MenuItem(self._auto_hide_label, self._on_toggle_hover_hide),
+            MenuItem(self._hotkey_label, self._on_change_hotkey),
+            Menu.SEPARATOR,
             MenuItem("Reset position", self._on_reset_position),
-            MenuItem("Show", lambda *_: self.app.ui_call(self.app.show_window)),
             MenuItem("Hide", lambda *_: self.app.ui_call(self.app.hide_window)),
             MenuItem("Quit", self.on_quit),
         )
+
+    def _session_label(self, _item: MenuItem) -> str:
+        """Live menu line with this session's cumulative transfer."""
+        down_mb, up_mb = self.app.session_totals
+        return session_label(down_mb, up_mb)
+
+    def _last_speedtest_label(self, _item: MenuItem) -> str:
+        """Menu line with the last speedtest, like the widget's second row."""
+        return speedtest_label(self.app.speedtest_summary)
+
+    def _auto_hide_label(self, _item: MenuItem) -> str:
+        """Auto-hide label carrying the same text checkmark as the widget."""
+        return auto_hide_label(get_hide_on_hover())
+
+    def _hotkey_label(self, _item: MenuItem) -> str:
+        """Hotkey action label, matching the widget's entry state."""
+        return hotkey_label(self.app.hotkey_ok, self.app.hotkey_combo)
 
     def _run_icon(self) -> None:
         """Run the pystray message loop, reporting why it exited early."""
@@ -140,9 +202,17 @@ class TrayController:
         self._refresh_menu()
 
     def update_live_status(self, status: str) -> None:
-        """Set the live speeds line shown in the tooltip."""
+        """Set the live speeds line and periodically refresh session totals."""
         self._live_status = status or ""
         self._refresh_title()
+        now = time.monotonic()
+        if now - self._last_session_refresh >= 30.0:
+            self._last_session_refresh = now
+            self._refresh_menu()
+
+    def update_settings(self) -> None:
+        """Refresh checked menu items after settings change in the app."""
+        self._refresh_menu()
 
     def start_speedtest_check(self) -> None:
         """Mark a speedtest as running and disable the menu action."""
@@ -164,11 +234,6 @@ class TrayController:
             image.load()
             return image.copy()
 
-    def _menu_status_text(self) -> str:
-        """Compose the disabled first menu line."""
-        lines = [self._speedtest_summary, self._live_status]
-        return " | ".join(line for line in lines if line) or "No data yet"
-
     def _refresh_title(self) -> None:
         """Push the combined status into the tray tooltip."""
         icon = self.icon
@@ -186,11 +251,11 @@ class TrayController:
     def _opacity_submenu(self) -> MenuItem:
         """Build the opacity submenu with radio-style checkmarks."""
         return MenuItem(
-            "Opacity",
+            lambda _item: opacity_percent_label(get_opacity()),
             Menu(
                 *(
                     MenuItem(
-                        _opacity_label(level),
+                        opacity_choice_text(level),
                         self._on_set_opacity(level),
                         checked=lambda *_a, lvl=level: abs(get_opacity() - lvl) < 1e-6,
                     )
@@ -198,6 +263,26 @@ class TrayController:
                 )
             ),
         )
+
+    def _theme_submenu(self) -> MenuItem:
+        """Build theme choices with a live check on the persisted selection."""
+        return MenuItem(
+            "Theme",
+            Menu(
+                *(
+                    MenuItem(
+                        name,
+                        self._on_set_theme(name),
+                        checked=lambda *_a, theme=name: get_theme() == theme,
+                    )
+                    for name in THEMES
+                )
+            ),
+        )
+
+    def _on_set_theme(self, name: str):
+        """Return the handler that asks the app to switch themes safely."""
+        return lambda *_a: self.app.set_theme(name)
 
     def _on_set_opacity(self, level: float):
         """Return the handler that asks the app to change opacity.
@@ -218,11 +303,6 @@ class TrayController:
         """Open the hotkey capture dialog on the Tk thread."""
         self.app.ui_call(self.app.open_hotkey_dialog)
 
-    def _on_check_speedtest(self, *_: object) -> None:
+    def _on_run_speedtest(self, *_: object) -> None:
         """Trigger a manual speedtest from the tray menu."""
         self.app.ui_call(self.app.run_speedtest_now, manual=True)
-
-
-def _opacity_label(level: float) -> str:
-    """Menu label for an opacity level, shared with the widget menu."""
-    return f"{int(level * 100)}%"

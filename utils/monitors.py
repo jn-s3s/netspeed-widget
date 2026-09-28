@@ -26,7 +26,10 @@ def active_monitor_rects() -> list[Rect]:
     An empty list means the display answered no query at all.
     """
     try:
-        return [tuple(rect) for _, _, rect in win32api.EnumDisplayMonitors()]
+        return [
+            (rect[0], rect[1], rect[2], rect[3])
+            for _, _, rect in win32api.EnumDisplayMonitors()
+        ]
     except Exception as err:  # noqa: BLE001 - a bad display must not stop the UI
         _log.warning(f"could not enumerate monitors: {err}")
         return []

@@ -18,6 +18,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+from collections import deque
 from collections.abc import Callable
 from tkinter import font as tkfont
 from tkinter import messagebox
@@ -27,7 +28,7 @@ import win32api
 import win32con
 
 from tray.container import TrayController
-from utils import hotkey_dialog, monitors
+from utils import hotkey_dialog, menu_labels, monitors
 from utils.config import (
     OPACITY_LEVELS,
     clamp_opacity,
@@ -36,6 +37,7 @@ from utils.config import (
     get_opacity,
     get_position,
     get_speedtest,
+    get_theme,
     set_hide_on_hover,
     set_hotkey,
     set_position,
@@ -44,9 +46,12 @@ from utils.config import (
 from utils.config import (
     set_opacity as config_set_opacity,
 )
+from utils.config import (
+    set_theme as config_set_theme,
+)
 from utils.format import format_speed
 from utils.graph import TrafficGraph
-from utils.hotkeys import GlobalHotkey, format_hotkey
+from utils.hotkeys import GlobalHotkey
 from utils.latency import LatencyProbe
 from utils.logger import get, section, startup
 from utils.paths import icon_path
@@ -54,19 +59,13 @@ from utils.sampler import NetSample, NetSampler
 from utils.schedule import next_speedtest_due
 from utils.speedtest import measure_speed
 from utils.theme import (
-    BAD_COLOR,
-    BORDER,
-    BORDER_HOVER,
-    DOWN_COLOR,
-    FG,
-    FG_DIM,
     FONT_FAMILY,
-    GOOD_COLOR,
-    SURFACE,
+    THEMES,
     TRANSPARENT,
-    UP_COLOR,
-    WARN_COLOR,
+    Health,
+    palette_for,
     rounded_rect,
+    status_color_for,
     status_download_color,
     status_upload_color,
 )
@@ -89,15 +88,29 @@ PILL_W = 340
 PILL_H = 52
 PILL_R = 16
 DOT_X, DOT_R = 15, 3.5
-ROW1_Y = 16
+ROW1_Y = 15
 ROW2_Y = 38
-DOWN_ARROW_X, DOWN_VAL_X = 24, 36
-UP_ARROW_X, UP_VAL_X = 74, 86
-UNIT_X = 122
-PING_X = 148
-ST_DOWN_X, ST_UP_X, ST_UNIT_X = 24, 66, 108
-GRAPH_X0, GRAPH_W = 190, 142
+DOWN_ARROW_X, DOWN_VAL_X = 23, 35
+UP_ARROW_X, UP_VAL_X = 82, 94
+UNIT_X = 137
+PING_X = 184
+ST_DOWN_X, ST_UP_X, ST_UNIT_X = 24, 78, 132
+GRAPH_X0, GRAPH_W = 210, 122
 GRAPH_TOP, GRAPH_BOTTOM = 6, PILL_H - 6
+
+# Readout layout: measured gaps between the texts in each row (see
+# _layout_readouts); kept next to the fixed geometry they tune.
+TEXT_GRAPH_GAP = 6
+VALUE_ARROW_GAP = 4
+ARROW_WIDTH = 10
+VALUE_UNIT_GAP = 4
+UNIT_PING_GAP = 4
+UNIT_Y_OFFSET = 2
+ROW2_VALUE_GAP = 9
+ROW2_UNIT_GAP = 8
+ROW2_TAIL_GAP = 12
+MIN_VALUE_ROOM = 12
+MIN_TEST_ROOM = 16
 
 HOVER_POLL_MS = 120
 # Escape hatch: a cursor parked on the pill keeps it hidden by design, but a
@@ -137,8 +150,13 @@ class NetSpeedWidget:
         self._run = True
         self._stop_event = threading.Event()
         self._rounded = False
+        self._last_layout_texts: tuple[str, ...] = ()
+        self._hotkey_combo = get_hotkey()
+        self._hotkey_ok = False
 
         self._configure_window()
+        self._theme_name = get_theme()
+        self._palette = palette_for(self._theme_name)
         self._build_ui()
         self._place_window()
 
@@ -146,9 +164,13 @@ class NetSpeedWidget:
         self._apply_alpha()
 
         self.hotkey = GlobalHotkey(lambda: self.ui_call(self.toggle_window))
-        self._hotkey_combo = get_hotkey()
         ok, err = self.hotkey.apply_combo(self._hotkey_combo)
         self._hotkey_ok = ok
+        if self._menu_hotkey_index is not None:
+            self.menu.entryconfig(
+                self._menu_hotkey_index,
+                label=menu_labels.hotkey_label(self._hotkey_ok, self._hotkey_combo),
+            )
         if not ok:
             _log.warning(f"'{self._hotkey_combo}' unavailable at startup: {err}")
 
@@ -164,7 +186,13 @@ class NetSpeedWidget:
         self._max_down_seen = 0.0
         self._tick_count = 0
         self._tick_failures = 0
-        self._status_color = GOOD_COLOR
+        self._health = Health.GOOD
+        self._status_events: deque[tuple[float, Health]] = deque(
+            [(0.0, Health.GOOD)], maxlen=GRAPH_SAMPLES * 2
+        )
+        # Paint the status dot now rather than waiting for the first latency
+        # tick, so a fresh window already shows its health color.
+        self._set_status(self._health, force=True)
         self._hover_guard_active = False
         self._dragging = False
         self._drag_offset = (0, 0)
@@ -227,13 +255,14 @@ class NetSpeedWidget:
 
     def _build_ui(self) -> None:
         """Draw the pill, texts and graph slots on a single canvas."""
+        p = self._palette
         self.font_value = tkfont.Font(family=FONT_FAMILY, size=10, weight="bold")
         self.font_arrow = tkfont.Font(family=FONT_FAMILY, size=9)
-        self.font_unit = tkfont.Font(family=FONT_FAMILY, size=6)
-        self.font_ping = tkfont.Font(family=FONT_FAMILY, size=8, weight="bold")
-        self.font_mini = tkfont.Font(family=FONT_FAMILY, size=7)
+        self.font_unit = tkfont.Font(family=FONT_FAMILY, size=8)
+        self.font_ping = tkfont.Font(family=FONT_FAMILY, size=9, weight="bold")
+        self.font_mini = tkfont.Font(family=FONT_FAMILY, size=8)
 
-        canvas_bg = TRANSPARENT if self._rounded else SURFACE
+        canvas_bg = TRANSPARENT if self._rounded else p.surface
         self.canvas = tk.Canvas(
             self.root,
             width=PILL_W,
@@ -252,13 +281,13 @@ class NetSpeedWidget:
                 PILL_W - 1,
                 PILL_H - 1,
                 PILL_R,
-                fill=SURFACE,
-                outline=BORDER,
+                fill=p.surface,
+                outline=p.border,
                 width=1,
             )
         else:
             self._pill = self.canvas.create_rectangle(
-                0, 0, PILL_W, PILL_H, fill=SURFACE, outline=BORDER, width=1
+                0, 0, PILL_W, PILL_H, fill=p.surface, outline=p.border, width=1
             )
 
         center_y = PILL_H / 2
@@ -267,7 +296,7 @@ class NetSpeedWidget:
             center_y - DOT_R,
             DOT_X + DOT_R,
             center_y + DOT_R,
-            fill=FG_DIM,
+            fill=p.fg_dim,
             outline="",
         )
 
@@ -277,7 +306,7 @@ class NetSpeedWidget:
             ROW1_Y,
             text="↓",
             font=self.font_arrow,
-            fill=DOWN_COLOR,
+            fill=p.down,
             anchor="w",
         )
         self._t_down_val = self.canvas.create_text(
@@ -285,7 +314,7 @@ class NetSpeedWidget:
             ROW1_Y,
             text="0.00",
             font=self.font_value,
-            fill=DOWN_COLOR,
+            fill=p.down,
             anchor="w",
         )
         self._t_up_arrow = self.canvas.create_text(
@@ -293,7 +322,7 @@ class NetSpeedWidget:
             ROW1_Y,
             text="↑",
             font=self.font_arrow,
-            fill=UP_COLOR,
+            fill=p.up,
             anchor="w",
         )
         self._t_up_val = self.canvas.create_text(
@@ -301,15 +330,15 @@ class NetSpeedWidget:
             ROW1_Y,
             text="0.00",
             font=self.font_value,
-            fill=UP_COLOR,
+            fill=p.up,
             anchor="w",
         )
         self._t_unit = self.canvas.create_text(
             UNIT_X,
-            ROW1_Y + 3,
+            ROW1_Y + UNIT_Y_OFFSET,
             text="Mb/s",
             font=self.font_unit,
-            fill=FG_DIM,
+            fill=p.fg_dim,
             anchor="w",
         )
         self._t_ping = self.canvas.create_text(
@@ -317,7 +346,7 @@ class NetSpeedWidget:
             ROW1_Y,
             text="-- ms",
             font=self.font_ping,
-            fill=FG_DIM,
+            fill=p.fg_dim,
             anchor="w",
         )
 
@@ -327,7 +356,7 @@ class NetSpeedWidget:
             ROW2_Y,
             text="↓ --",
             font=self.font_mini,
-            fill=DOWN_COLOR,
+            fill=p.down,
             anchor="w",
         )
         self._t_st_up = self.canvas.create_text(
@@ -335,17 +364,21 @@ class NetSpeedWidget:
             ROW2_Y,
             text="↑ --",
             font=self.font_mini,
-            fill=UP_COLOR,
+            fill=p.up,
             anchor="w",
         )
         self._t_st_unit = self.canvas.create_text(
             ST_UNIT_X,
             ROW2_Y,
-            text="Mb/s speedtest",
+            text="Mb/s test",
             font=self.font_unit,
-            fill=FG_DIM,
+            fill=p.fg_dim,
             anchor="w",
         )
+
+        # Position text from its measured width, with the graph boundary as a
+        # hard stop for both rows.
+        self._layout_readouts()
 
         self._graph = TrafficGraph(
             canvas=self.canvas,
@@ -354,7 +387,10 @@ class NetSpeedWidget:
             top=GRAPH_TOP,
             bottom=GRAPH_BOTTOM,
             capacity=GRAPH_SAMPLES,
+            palette=self._palette,
         )
+        self._theme_var = tk.StringVar(value=self._theme_name)
+        self._hover_var = tk.BooleanVar(value=get_hide_on_hover())
         self.menu = self._build_menu()
 
     def _place_window(self) -> None:
@@ -454,14 +490,15 @@ class NetSpeedWidget:
 
     def _build_menu(self) -> tk.Menu:
         """Create the right-click context menu."""
+        p = self._palette
         menu = tk.Menu(
             self.root,
             tearoff=0,
-            bg=SURFACE,
-            fg=FG,
-            activebackground=BORDER,
-            activeforeground=FG,
-            disabledforeground=FG_DIM,
+            bg=p.surface,
+            fg=p.fg,
+            activebackground=p.border,
+            activeforeground=p.fg,
+            disabledforeground=p.fg_dim,
             relief="flat",
             borderwidth=1,
             font=(FONT_FAMILY, 9),
@@ -470,34 +507,64 @@ class NetSpeedWidget:
             label="Run speedtest",
             command=lambda: self.run_speedtest_now(manual=True),
         )
-        menu.add_command(label="Session: --", state="disabled")
+        menu.add_command(label=menu_labels.session_label(0.0, 0.0), state="disabled")
         self._menu_session_index = menu.index("end")
-        menu.add_command(label="Last speedtest: --", state="disabled")
+        menu.add_command(label=menu_labels.speedtest_label(""), state="disabled")
         self._menu_speedtest_index = menu.index("end")
+
+        theme_menu = tk.Menu(
+            menu,
+            tearoff=0,
+            bg=p.surface,
+            fg=p.fg,
+            activebackground=p.border,
+            activeforeground=p.fg,
+            font=(FONT_FAMILY, 9),
+        )
+        for theme_name in THEMES:
+            theme_menu.add_radiobutton(
+                # Use only a text marker: Tk's native radio indicator can
+                # disappear against dark menu colors.
+                label=f"{'✓ ' if theme_name == self._theme_name else ''}{theme_name}",
+                variable=self._theme_var,
+                value=theme_name,
+                indicatoron=False,
+                command=lambda n=theme_name: self._apply_theme(n),
+            )
+        menu.add_cascade(label="Theme", menu=theme_menu)
 
         opacity_menu = tk.Menu(
             menu,
             tearoff=0,
-            bg=SURFACE,
-            fg=FG,
-            activebackground=BORDER,
-            activeforeground=FG,
+            bg=p.surface,
+            fg=p.fg,
+            activebackground=p.border,
+            activeforeground=p.fg,
             font=(FONT_FAMILY, 9),
         )
         for level in OPACITY_LEVELS:
             opacity_menu.add_command(
-                label=f"{int(level * 100)}%",
+                label=menu_labels.opacity_choice_label(level, get_opacity()),
                 command=lambda lvl=level: self.set_opacity(lvl),
             )
-        menu.add_cascade(label="Opacity", menu=opacity_menu)
+        self._opacity_menu = opacity_menu
+        menu.add_cascade(
+            label=menu_labels.opacity_percent_label(get_opacity()),
+            menu=opacity_menu,
+        )
+        self._menu_opacity_index = menu.index("end")
 
-        self._hover_var = tk.BooleanVar(value=get_hide_on_hover())
         menu.add_checkbutton(
-            label="Auto-hide on hover",
+            label=menu_labels.auto_hide_label(get_hide_on_hover()),
             variable=self._hover_var,
+            indicatoron=False,
             command=self._toggle_hover_hide,
         )
-        menu.add_command(label="Change hotkey...", command=self.open_hotkey_dialog)
+        self._menu_hover_index = menu.index("end")
+        menu.add_command(
+            label=menu_labels.hotkey_label(self._hotkey_ok, self._hotkey_combo),
+            command=self.open_hotkey_dialog,
+        )
         self._menu_hotkey_index = menu.index("end")
         menu.add_separator()
         menu.add_command(label="Reset position", command=self.reset_position)
@@ -505,34 +572,109 @@ class NetSpeedWidget:
         menu.add_command(label="Quit", command=self.shutdown)
         return menu
 
+    def _apply_theme(self, name: str) -> None:
+        """Switch to a theme preset, repaint and persist the choice."""
+        if name not in THEMES:
+            return
+        self._theme_name = name
+        self._palette = palette_for(name)
+        self._graph.palette = self._palette
+        config_set_theme(name)
+        self._recolor_ui()
+        if self.tray is not None:
+            self.tray.update_settings()
+        _log.info(f"theme set to {name}")
+
+    def set_theme(self, name: str) -> None:
+        """Validate and marshal a theme change requested off the Tk thread."""
+        if isinstance(name, str) and name in THEMES:
+            self.ui_call(self._apply_theme, name)
+
+    def _recolor_ui(self) -> None:
+        """Repaint every palette-driven item in the current theme."""
+        p = self._palette
+        self.canvas.itemconfig(self._pill, fill=p.surface, outline=p.border)
+        self.canvas.configure(bg=TRANSPARENT if self._rounded else p.surface)
+        self.canvas.itemconfig(self._t_down_arrow, fill=p.down)
+        self.canvas.itemconfig(self._t_down_val, fill=p.down)
+        self.canvas.itemconfig(self._t_up_arrow, fill=p.up)
+        self.canvas.itemconfig(self._t_up_val, fill=p.up)
+        self.canvas.itemconfig(self._t_unit, fill=p.fg_dim)
+        self.canvas.itemconfig(self._t_ping, fill=status_color_for(self._health, p))
+        self.canvas.itemconfig(self._t_st_down, fill=p.down)
+        self.canvas.itemconfig(self._t_st_up, fill=p.up)
+        self.canvas.itemconfig(self._t_st_unit, fill=p.fg_dim)
+        self._set_status(self._health, force=True)
+        self._draw_graph()
+        # This runs from inside the old menu's own radiobutton callback, so the
+        # teardown waits one loop turn rather than cutting the grab back from
+        # under the menu that is still unwinding.
+        old_menu = self.menu
+        self.menu = self._build_menu()
+        self.root.after(0, old_menu.destroy)
+
     def _popup_menu(self, event: tk.Event) -> None:
         """Refresh dynamic entries, then show the context menu."""
         down_mb, up_mb = self.sampler.session_totals
+        if self._menu_session_index is None:
+            return
         self.menu.entryconfig(
             self._menu_session_index,
-            label=f"Session: {down_mb:.1f} MB down, {up_mb:.1f} MB up",
+            label=menu_labels.session_label(down_mb, up_mb),
         )
+        if self._menu_speedtest_index is None:
+            return
         self.menu.entryconfig(
             self._menu_speedtest_index,
-            label=self._speedtest_summary or "Last speedtest: --",
+            label=menu_labels.speedtest_label(self._speedtest_summary),
         )
-        if self._hotkey_ok:
-            hotkey_label = f"Change hotkey ({format_hotkey(self._hotkey_combo)})"
-        else:
-            hotkey_label = "Set hotkey (none active)"
-        self.menu.entryconfig(self._menu_hotkey_index, label=hotkey_label)
-        self._hover_var.set(get_hide_on_hover())
+        if self._menu_hotkey_index is None:
+            return
+        self.menu.entryconfig(
+            self._menu_hotkey_index,
+            label=menu_labels.hotkey_label(self._hotkey_ok, self._hotkey_combo),
+        )
+        self._refresh_menu_indicators()
         self.menu.post(event.x_root, event.y_root)
+
+    def _refresh_menu_indicators(self) -> None:
+        """Sync explicit text markers with settings changed by any UI surface."""
+        hide_on_hover = get_hide_on_hover()
+        opacity = get_opacity()
+        self._hover_var.set(hide_on_hover)
+        if self._menu_hover_index is None:
+            return
+        self.menu.entryconfig(
+            self._menu_hover_index,
+            label=menu_labels.auto_hide_label(hide_on_hover),
+        )
+        if self._menu_opacity_index is None:
+            return
+        self.menu.entryconfig(
+            self._menu_opacity_index,
+            label=menu_labels.opacity_percent_label(opacity),
+        )
+        for index, level in enumerate(OPACITY_LEVELS):
+            self._opacity_menu.entryconfig(
+                index,
+                label=menu_labels.opacity_choice_label(level, opacity),
+            )
 
     def _toggle_hover_hide(self) -> None:
         """Persist the auto-hide checkbox state."""
         set_hide_on_hover(self._hover_var.get())
+        self._refresh_menu_indicators()
+        if self.tray is not None:
+            self.tray.update_settings()
 
     def toggle_hover_hide(self) -> None:
         """Flip the auto-hide setting. Called from the tray menu."""
         enabled = not get_hide_on_hover()
         set_hide_on_hover(enabled)
         self._hover_var.set(enabled)
+        self._refresh_menu_indicators()
+        if self.tray is not None:
+            self.tray.update_settings()
         _log.info(f"auto-hide on hover: {enabled}")
 
     # ---------- Tick loop and rendering ----------
@@ -582,6 +724,7 @@ class NetSpeedWidget:
         self._smooth_up += (sample.up_mbps - self._smooth_up) * 0.45
         self.canvas.itemconfig(self._t_down_val, text=format_speed(self._smooth_down))
         self.canvas.itemconfig(self._t_up_val, text=format_speed(self._smooth_up))
+        self._layout_readouts()
 
         if sample.up_mbps > self._max_up_seen and sample.up_mbps >= 1.0:
             self._max_up_seen = sample.up_mbps
@@ -590,46 +733,185 @@ class NetSpeedWidget:
             self._max_down_seen = sample.down_mbps
             _net_log.info(f"new downstream peak {sample.down_mbps:.2f} Mb/s")
 
-        self._graph.draw(self.sampler.history, self._status_color)
+        self._draw_graph()
+
+    def _draw_graph(self) -> None:
+        """Draw the visible samples in the health colors they were recorded in."""
+        samples = self.sampler.history
+        self._trim_status_events(samples)
+        self._graph.draw(samples, self._health, self._status_events)
+
+    def _trim_status_events(self, samples: list[NetSample]) -> None:
+        """Drop the health transitions that fell out of the visible window.
+
+        The oldest surviving event stays behind on purpose: a sample older than
+        every recorded transition still needs a color, and that event is the
+        health the window opened on.
+        """
+        if not samples:
+            return
+        oldest_ts = samples[0].ts
+        while len(self._status_events) > 1 and self._status_events[1][0] <= oldest_ts:
+            self._status_events.popleft()
 
     def _render_latency(self) -> None:
-        """Refresh the latency text and status dot."""
-        if self._speedtest_running:
-            self.canvas.itemconfig(self._t_ping, text="test...", fill=FG_DIM)
-            return
+        """Refresh the latency text and status dot.
+
+        A running speedtest saturates the connection, so the latency probe
+        reports artificially high values. Those must not be recorded as real
+        health transitions, or every run would stamp a false "outage" onto the
+        graph; status simply freezes until the test finishes.
+        """
         result = self.probe.latest
+        if self._speedtest_running:
+            self.canvas.itemconfig(
+                self._t_ping, text="test...", fill=self._palette.fg_dim
+            )
+            return
         if not result.ok:
-            self.canvas.itemconfig(self._t_ping, text="offline", fill=BAD_COLOR)
-            self._set_status(BAD_COLOR)
+            text, health, dim = "offline", Health.BAD, False
         elif result.ms is None:
-            self.canvas.itemconfig(self._t_ping, text="-- ms", fill=FG_DIM)
-            self._set_status(WARN_COLOR)
+            text, health, dim = "-- ms", Health.WARN, True
         else:
             ms = result.ms
             if ms < 80:
-                color = GOOD_COLOR
+                health = Health.GOOD
             elif ms < 180:
-                color = WARN_COLOR
+                health = Health.WARN
             else:
-                color = BAD_COLOR
-            self.canvas.itemconfig(self._t_ping, text=f"{ms:.0f} ms", fill=color)
-            self._set_status(color)
+                health = Health.BAD
+            text, dim = f"{ms:.0f} ms", False
 
-    def _set_status(self, color: str) -> None:
-        """Recolor status-dependent UI and redraw the graph for `color`."""
-        if color != self._status_color:
-            self._status_color = color
-            download_color = status_download_color(color)
+        changed = self._record_status(health, result.ts)
+        self._set_status(health)
+        if changed:
+            self._draw_graph()
+        # A measurement that is merely still pending is not a degraded link, so
+        # the readout stays dim while the dot carries the warn state.
+        ping_fill = status_color_for(health, self._palette)
+        if dim:
+            ping_fill = self._palette.fg_dim
+        self.canvas.itemconfig(self._t_ping, text=text, fill=ping_fill)
+        self._layout_readouts()
 
-            self.canvas.itemconfig(self._t_down_arrow, fill=download_color)
-            self.canvas.itemconfig(self._t_down_val, fill=download_color)
-            self.canvas.itemconfig(self._t_st_down, fill=download_color)
-            self.canvas.itemconfig(self._dot_item, fill=color)
-            upload_color = status_upload_color(color)
-            self.canvas.itemconfig(self._t_up_arrow, fill=upload_color)
-            self.canvas.itemconfig(self._t_up_val, fill=upload_color)
-            self.canvas.itemconfig(self._t_st_up, fill=upload_color)
-            self._graph.draw(self.sampler.history, color)
+    def _layout_readouts(self) -> None:
+        """Keep measured text inside the left text area, before the graph."""
+        down_text = self.canvas.itemcget(self._t_down_val, "text")
+        up_text = self.canvas.itemcget(self._t_up_val, "text")
+        ping_text = self.canvas.itemcget(self._t_ping, "text")
+        down_test = self.canvas.itemcget(self._t_st_down, "text")
+        up_test = self.canvas.itemcget(self._t_st_up, "text")
+        unit_label = self.canvas.itemcget(self._t_st_unit, "text")
+        current = (down_text, up_text, ping_text, down_test, up_test, unit_label)
+        if current == self._last_layout_texts:
+            return
+
+        ping_width = self.font_ping.measure(ping_text)
+        text_limit = GRAPH_X0 - TEXT_GRAPH_GAP
+        ping_left = text_limit - ping_width
+        self.canvas.coords(self._t_ping, ping_left, ROW1_Y)
+        # Keep room for both the unit and ping before distributing any
+        # remaining space to the two live values.
+        unit_width = self.font_unit.measure("Mb/s")
+        speed_room = (
+            ping_left
+            - DOWN_VAL_X
+            - VALUE_ARROW_GAP
+            - ARROW_WIDTH
+            - unit_width
+            - UNIT_PING_GAP
+            - VALUE_UNIT_GAP
+        )
+        value_room = max(MIN_VALUE_ROOM, speed_room // 2)
+        # Exceptionally long readings get an ellipsis instead of running into
+        # the unit, ping, or graph.
+        down_text = self._ellipsize(down_text, self.font_value, value_room)
+        up_text = self._ellipsize(up_text, self.font_value, value_room)
+        self.canvas.itemconfigure(self._t_down_val, text=down_text)
+        self.canvas.itemconfigure(self._t_up_val, text=up_text)
+        down_width = self.font_value.measure(down_text)
+        up_width = self.font_value.measure(up_text)
+        up_arrow_x = DOWN_VAL_X + down_width + VALUE_ARROW_GAP
+        self.canvas.coords(self._t_up_arrow, up_arrow_x, ROW1_Y)
+        up_value_x = up_arrow_x + ARROW_WIDTH
+        self.canvas.coords(self._t_up_val, up_value_x, ROW1_Y)
+        unit_x = up_value_x + up_width + VALUE_UNIT_GAP
+        self.canvas.coords(self._t_unit, unit_x, ROW1_Y + UNIT_Y_OFFSET)
+        self.canvas.itemconfigure(self._t_unit, state="normal")
+
+        unit_width = self.font_unit.measure(unit_label)
+        row2_room = (
+            text_limit
+            - ST_DOWN_X
+            - ROW2_VALUE_GAP
+            - ROW2_UNIT_GAP
+            - unit_width
+            - ROW2_TAIL_GAP
+        )
+        test_value_room = max(MIN_TEST_ROOM, row2_room // 2)
+        down_test = self._ellipsize(down_test, self.font_mini, test_value_room)
+        up_test = self._ellipsize(up_test, self.font_mini, test_value_room)
+        self.canvas.itemconfigure(self._t_st_down, text=down_test)
+        self.canvas.itemconfigure(self._t_st_up, text=up_test)
+        down_test_width = self.font_mini.measure(down_test)
+        up_test_width = self.font_mini.measure(up_test)
+        up_test_x = ST_DOWN_X + down_test_width + ROW2_VALUE_GAP
+        test_unit_x = up_test_x + up_test_width + ROW2_UNIT_GAP
+        self.canvas.coords(self._t_st_up, up_test_x, ROW2_Y)
+        self.canvas.coords(self._t_st_unit, test_unit_x, ROW2_Y)
+        self.canvas.itemconfigure(self._t_st_unit, state="normal")
+        self._last_layout_texts = (
+            down_text,
+            up_text,
+            ping_text,
+            down_test,
+            up_test,
+            unit_label,
+        )
+
+    @staticmethod
+    def _ellipsize(text: str, font: tkfont.Font, max_width: int) -> str:
+        """Shorten exceptional long readings to fit their allocated text slot."""
+        if font.measure(text) <= max_width:
+            return text
+        suffix = "…"
+        shortened = text
+        while shortened and font.measure(shortened + suffix) > max_width:
+            shortened = shortened[:-1]
+        return shortened + suffix
+
+    def _record_status(self, health: Health, ts: float) -> bool:
+        """Keep each latency transition in the rolling graph history.
+
+        Returns True when a new event was appended, meaning the health changed,
+        so the caller can repaint the graph once.
+        """
+        if health != self._status_events[-1][1]:
+            self._status_events.append((ts, health))
+            return True
+        return False
+
+    def _set_status(self, health: Health, force: bool = False) -> None:
+        """Recolor the live UI when its displayed health changes.
+
+        `force` re-applies the current health, which a theme change needs
+        because the health itself does not move.
+        """
+        if health == self._health and not force:
+            return
+        self._health = health
+        download_color = status_download_color(health, self._palette)
+
+        self.canvas.itemconfig(self._t_down_arrow, fill=download_color)
+        self.canvas.itemconfig(self._t_down_val, fill=download_color)
+        self.canvas.itemconfig(self._t_st_down, fill=download_color)
+        self.canvas.itemconfig(
+            self._dot_item, fill=status_color_for(health, self._palette)
+        )
+        upload_color = status_upload_color(health, self._palette)
+        self.canvas.itemconfig(self._t_up_arrow, fill=upload_color)
+        self.canvas.itemconfig(self._t_up_val, fill=upload_color)
+        self.canvas.itemconfig(self._t_st_up, fill=upload_color)
 
     def _push_tray_status(self) -> None:
         """Update the tray tooltip with current speeds and latency."""
@@ -656,7 +938,7 @@ class NetSpeedWidget:
         A drag in progress is never interrupted by hiding, because the
         withdraw would break the mouse grab the drag depends on.
         """
-        self.canvas.itemconfig(self._pill, outline=BORDER_HOVER)
+        self.canvas.itemconfig(self._pill, outline=self._palette.border_hover)
         blocked = self._hover_guard_active or self._dragging
         if blocked or not get_hide_on_hover():
             return
@@ -667,7 +949,7 @@ class NetSpeedWidget:
 
     def _on_mouse_leave(self, _event: Any = None) -> None:
         """Restore the default pill border."""
-        self.canvas.itemconfig(self._pill, outline=BORDER)
+        self.canvas.itemconfig(self._pill, outline=self._palette.border)
 
     def _poll_cursor_and_restore(self, attempts: int = 0) -> None:
         """Restore the window once the cursor leaves its bounds.
@@ -705,7 +987,7 @@ class NetSpeedWidget:
         """Bring the window back and drop the hover highlight."""
         try:
             self.root.deiconify()
-            self.canvas.itemconfig(self._pill, outline=BORDER)
+            self.canvas.itemconfig(self._pill, outline=self._palette.border)
         except tk.TclError as err:
             _log.warning(f"hover restore could not redraw the window: {err}")
             return
@@ -754,7 +1036,10 @@ class NetSpeedWidget:
             dialog.focus_force()
             return
         self._hotkey_dialog = hotkey_dialog.show(
-            self.root, self._hotkey_combo, self._apply_hotkey
+            self.root,
+            self._hotkey_combo,
+            self._apply_hotkey,
+            palette=self._palette,
         )
 
     def _apply_hotkey(self, combo: str) -> tuple[bool, str | None]:
@@ -771,6 +1056,8 @@ class NetSpeedWidget:
         set_hotkey(combo)
         self._hotkey_combo = combo
         self._hotkey_ok = True
+        if self.tray is not None:
+            self.tray.update_settings()
         _log.info(f"global hotkey set to {combo}")
         return True, None
 
@@ -791,6 +1078,9 @@ class NetSpeedWidget:
         """Apply an already-clamped opacity on the Tk thread."""
         self.opacity = config_set_opacity(target)
         self._apply_alpha()
+        self._refresh_menu_indicators()
+        if self.tray is not None:
+            self.tray.update_settings()
         _log.info(f"opacity set to {self.opacity:.2f}")
 
     def _apply_alpha(self) -> None:
@@ -799,6 +1089,40 @@ class NetSpeedWidget:
             self.root.attributes("-alpha", self.opacity)
         except tk.TclError:
             pass  # documented contract: alpha unsupported on some systems
+
+    # ---------- Tray-facing state ----------
+
+    @property
+    def session_totals(self) -> tuple[float, float]:
+        """Cumulative transfer this session.
+
+        Lock-protected in NetSampler; safe to read from any thread.
+        """
+        return self.sampler.session_totals
+
+    @property
+    def hotkey_combo(self) -> str:
+        """Active hotkey combo.
+
+        Set on Tk thread; GIL-atomic read from tray thread (may lag one update).
+        """
+        return self._hotkey_combo
+
+    @property
+    def hotkey_ok(self) -> bool:
+        """Whether the hotkey is registered.
+
+        Set on Tk thread; GIL-atomic read from tray thread.
+        """
+        return self._hotkey_ok
+
+    @property
+    def speedtest_summary(self) -> str:
+        """Last speedtest line.
+
+        Set on Tk thread; GIL-atomic read from tray thread (may lag one update).
+        """
+        return self._speedtest_summary
 
     def attach_tray(self, tray: TrayController) -> None:
         """Attach the tray controller and push the current summary."""
@@ -934,7 +1258,10 @@ class NetSpeedWidget:
         )
         self.canvas.itemconfig(self._t_st_down, text=f"↓ {down_mbps:.1f}")
         self.canvas.itemconfig(self._t_st_up, text=f"↑ {up_mbps:.1f}")
-        self.canvas.itemconfig(self._t_st_unit, text=f"Mb/s {kind}")
+        self.canvas.itemconfig(
+            self._t_st_unit, text="Mb/s test" if measured else "Mb/s est."
+        )
+        self._layout_readouts()
 
     def _notify_tray(self, message: str) -> None:
         """Send a summary string to the tray, if attached."""

@@ -16,7 +16,7 @@ A tiny always-on-top widget for Windows that shows your live network speed, ping
 
 - Live download and upload speed, in Mb/s.
 - Latency to a fast CDN server, measured with a plain TCP connect (with an ICMP ping as a fallback when outbound TCP is blocked). A colored dot tells you at a glance whether things look good, slow or offline.
-- A rolling graph of the last minute of traffic that rescales itself to the biggest spike, so busy and quiet moments both stay readable.
+- A rolling graph of the last minute of traffic that rescales itself to the biggest spike, so busy and quiet moments both stay readable. Each segment is tinted by the latency health recorded at that moment (frozen during speedtests), so you can see when things went red.
 - Your last speedtest result on the widget itself (a smaller second row), plus the right-click menu and tray tooltip.
 - It follows your screens: if the display it was sitting on gets disconnected or disabled, it snaps back to the active screen instead of hiding off-screen.
 - How much data you have downloaded and uploaded since you started the app (right-click menu).
@@ -27,9 +27,10 @@ A tiny always-on-top widget for Windows that shows your live network speed, ping
 - **Drag** it anywhere you like. The position is remembered between runs.
 - **Double-click** to run a speedtest.
 - **Right-click** for a menu: run a speedtest, see session totals, change opacity, toggle auto-hide, reset the position, hide or quit.
+- **Right-click > Theme** picks one of the built-in color presets; your choice is persisted, so the widget starts with the same look next time.
 - **Hover** over it and it politely hides itself until you move the mouse away, if you turn on "Auto-hide on hover".
 - **Hotkey** Ctrl+Shift+Alt+N shows or hides the widget from anywhere, even when it has no focus. Pick your own combo with right-click > "Change hotkey..." (also in the tray menu). If the combo is already taken by another app or reserved by Windows, the widget says so and keeps the old one.
-- The tray icon offers the same actions, plus a live speed readout in its tooltip.
+- The tray icon offers quick actions (speedtest, show/hide, quit) plus a live speed readout in its tooltip.
 
 ## Speedtest engine
 
@@ -96,14 +97,14 @@ report.
 
 ## Development
 
-Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Install the dev tools once:
+Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Type checking uses [Pyright](https://microsoft.github.io/pyright/), configured in `pyrightconfig.json`. Install the dev tools once:
 
 ```powershell
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\pip install -r requirements-dev.txt
 ```
 
-Run both checks (same commands CI runs):
+Run all checks (same commands CI runs):
 
 ```powershell
 .\lint.ps1
@@ -116,9 +117,10 @@ Or call the tools directly:
 .venv\Scripts\ruff check --fix .    # lint and apply safe fixes
 .venv\Scripts\ruff format .         # format in place
 .venv\Scripts\ruff format --check . # verify formatting only
+.venv\Scripts\pyright               # type check
 ```
 
-`ruff check .` and `ruff format --check .` must both exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
+`ruff check .`, `ruff format --check .`, and `pyright` must all exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
 
 The test suite under `tests/` uses pytest. An autouse fixture repoints
 `APPDATA` at a temp directory, so no run ever touches your real
@@ -127,10 +129,10 @@ formatting and the register-before-release swap, the speedtest provider order,
 JSON parsing and the passive estimate's idle and counter-reset limits, sampler
 rate math and thread lifecycle (including counter-reset and zero-elapsed edge
 cases), monitor visibility and the off-screen rescue, speedtest scheduling,
-graph scaling, config load, save, locking and validation, log levels and
-rollover, path resolution, tray menu routing and the widget's drag, hover,
-opacity, tick and shutdown behavior against a recorded fake window. Run it
-locally:
+graph scaling and per-segment health coloring, config load, save, locking and
+validation, log levels and rollover, path resolution, tray menu routing and
+the widget's drag, hover, opacity, theme switching, tick and shutdown behavior
+against a recorded fake window. Run it locally:
 
 ```powershell
 .venv\Scripts\python -m pytest tests -q
@@ -149,11 +151,12 @@ CI runs the same command on every push and pull request, and again before every 
 - `utils/schedule.py` - decides when the next automatic speedtest is due.
 - `utils/graph.py` - the rolling traffic plot and its peak scaling.
 - `utils/monitors.py` - display geometry, so the widget can tell when it is stranded.
-- `utils/theme.py` - the palette and the rounded pill shape.
+- `utils/theme.py` - the palette, theme registry, status health color mapping and the rounded pill shape.
 - `utils/config.py` - small persistent settings in `%APPDATA%\NetSpeedWidget\config.json`.
 - `utils/paths.py` - resolves resource and state paths for source runs and PyInstaller builds.
 - `utils/logger.py` - levelled, subsystem-tagged logging with size-based rollover.
 - `utils/version.py` - the one place the app version is written.
+- `utils/menu_labels.py` - shared text formats for the widget and tray menus.
 - `utils/format.py` - shared number formatting.
 - `tray/container.py` - the system tray icon and menu.
 - `build.py` and `clean.py` - packaging helpers.

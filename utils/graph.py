@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 
 from utils.sampler import NetSample
 from utils.theme import (
-    BORDER,
-    GOOD_COLOR,
+    DEFAULT_THEME,
+    Health,
+    Palette,
+    palette_for,
     status_download_color,
     status_fill_color,
     status_upload_color,
@@ -44,11 +46,20 @@ class TrafficGraph:
     bottom: int
     capacity: int
     _scale: float = field(default=1.0, init=False)
+    palette: Palette = field(default_factory=lambda: palette_for(DEFAULT_THEME))
 
     def draw(
-        self, samples: Sequence[NetSample], status_color: str = GOOD_COLOR
+        self,
+        samples: Sequence[NetSample],
+        health: Health = Health.GOOD,
+        status_events: Sequence[tuple[float, Health]] = (),
     ) -> None:
-        """Redraw the slot for `samples` in `status_color`."""
+        """Redraw the slot, retaining the health color of each past segment.
+
+        `health` only colors the window when `status_events` is empty; once
+        events are supplied they alone decide each segment, so a caller cannot
+        pass both and expect the fallback to be honored.
+        """
         self.canvas.delete("graph")
         if len(samples) < 2:
             return
@@ -65,7 +76,6 @@ class TrafficGraph:
 
         step = self.width / (self.capacity - 1)
         start_x = self.x0 + self.width - (len(samples) - 1) * step
-        end_x = start_x + (len(samples) - 1) * step
         base = float(self.bottom)
 
         self.canvas.create_line(
@@ -73,7 +83,7 @@ class TrafficGraph:
             base + BASELINE_OFFSET,
             self.x0 + self.width,
             base + BASELINE_OFFSET,
-            fill=BORDER,
+            fill=self.palette.border,
             tags="graph",
         )
 
@@ -84,23 +94,52 @@ class TrafficGraph:
             down_points.extend((x, self._to_y(sample.down_mbps)))
             up_points.extend((x, self._to_y(sample.up_mbps)))
 
-        fill_color = status_fill_color(status_color)
-        self.canvas.create_polygon(
-            start_x,
-            base,
-            *down_points,
-            end_x,
-            base,
-            fill=fill_color,
-            outline="",
-            tags="graph",
-        )
-        download_color = status_download_color(status_color)
-        self.canvas.create_line(
-            *down_points, fill=download_color, width=2, tags="graph"
-        )
-        upload_color = status_upload_color(status_color)
-        self.canvas.create_line(*up_points, fill=upload_color, width=1, tags="graph")
+        segment_colors: list[Health] = []
+        event_index = 0
+        for sample in samples[1:]:
+            while (
+                event_index + 1 < len(status_events)
+                and status_events[event_index + 1][0] <= sample.ts
+            ):
+                event_index += 1
+            segment_colors.append(
+                status_events[event_index][1] if status_events else health
+            )
+
+        runs: list[tuple[int, int, Health]] = []
+        run_start = 0
+        for index in range(1, len(segment_colors)):
+            if segment_colors[index] != segment_colors[run_start]:
+                runs.append((run_start, index, segment_colors[run_start]))
+                run_start = index
+        runs.append((run_start, len(segment_colors), segment_colors[run_start]))
+
+        for first, last, run_health in runs:
+            points = down_points[first * 2 : (last + 1) * 2]
+            self.canvas.create_polygon(
+                points[0],
+                base,
+                *points,
+                points[-2],
+                base,
+                fill=status_fill_color(run_health, self.palette),
+                outline="",
+                tags="graph",
+            )
+        for first, last, run_health in runs:
+            self.canvas.create_line(
+                *down_points[first * 2 : (last + 1) * 2],
+                fill=status_download_color(run_health, self.palette),
+                width=2,
+                tags="graph",
+            )
+        for first, last, run_health in runs:
+            self.canvas.create_line(
+                *up_points[first * 2 : (last + 1) * 2],
+                fill=status_upload_color(run_health, self.palette),
+                width=1,
+                tags="graph",
+            )
 
     def _to_y(self, value: float) -> float:
         """Map a Mb/s value onto the slot, scaled by the current peak."""
