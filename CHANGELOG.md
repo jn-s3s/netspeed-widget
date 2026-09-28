@@ -49,7 +49,19 @@ Pushing a `v*` tag runs the release workflow, which builds the app and drafts a 
 
 ## [1.0.0] - 2025-09-03
 
-Initial release. See [v1.0.0](https://github.com/jn-s3s/netspeed-widget/releases/tag/v1.0.0) for what it shipped; it predates this file, so nothing is listed here beyond the pointer.
+Initial release of the NetSpeed Widget — a small always-on-top Windows widget that shows live network speed, latency and a rolling traffic graph.
+
+### Added
+
+- Live download and upload speed display
+- Rolling traffic graph that rescales to recent peaks
+- Latency probe with color-coded health indicator
+- System tray integration with context menu (widget lives in the tray, no taskbar icon)
+- Periodic background speedtest using a vendored fast-cli backend
+- Opacity controls accessible from the tray menu
+- Persistent settings across sessions (position, opacity, last speedtest result)
+- Logger for diagnostics and troubleshooting
+- Modular code structure with separated concerns
 
 [Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.0.0...v1.1.0
