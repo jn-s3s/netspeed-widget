@@ -12,7 +12,9 @@ import threading
 import time
 from dataclasses import dataclass
 
-from utils.logger import warn
+from utils.logger import get
+
+_log = get("net")
 
 PING_HOST = "fast.com"
 PING_PORT = 443
@@ -83,17 +85,15 @@ class LatencyProbe:
                 was_ok = self._latest.ok
                 self._latest = result
             if result.ok and not was_ok:
-                warn("[NET] connectivity restored")
+                _log.info("connectivity restored")
             elif not result.ok and was_ok:
-                warn("[NET] connectivity lost")
+                _log.warning("connectivity lost")
             self._stop.wait(self.interval)
 
     def _measure(self) -> LatencyResult:
         start = time.monotonic()
         try:
-            with socket.create_connection(
-                (self.host, self.port), timeout=self.timeout
-            ):
+            with socket.create_connection((self.host, self.port), timeout=self.timeout):
                 ms = (time.monotonic() - start) * 1000.0
                 return LatencyResult(ms=ms, ok=True, ts=time.time())
         except OSError:
@@ -111,9 +111,10 @@ class LatencyProbe:
                 cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                creationflags=subprocess.CREATE_NO_WINDOW,
                 check=False,
             )
             return result.returncode == 0
-        except OSError:
+        except OSError as err:
+            _log.warning(f"icmp fallback could not run ping: {err}")
             return False

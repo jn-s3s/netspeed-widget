@@ -12,7 +12,9 @@ from dataclasses import dataclass
 
 import psutil
 
-from utils.logger import warn
+from utils.logger import get
+
+_log = get("sampler")
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,9 @@ class NetSampler:
         self._thread: threading.Thread | None = None
         self._session_down_bytes = 0
         self._session_up_bytes = 0
+        self._last_sent: int | None = None
+        self._last_recv: int | None = None
+        self._last_ts: float | None = None
 
     def start(self) -> None:
         """Start the sampling thread once."""
@@ -79,34 +84,47 @@ class NetSampler:
         try:
             counters = psutil.net_io_counters()
         except OSError as err:
-            warn(f"[SAMPLER] failed to read net counters: {err}")
+            _log.warning(f"failed to read net counters: {err}")
             return
 
-        last_sent = counters.bytes_sent
-        last_recv = counters.bytes_recv
-        last_ts = time.monotonic()
+        self._record_sample(counters.bytes_sent, counters.bytes_recv, time.monotonic())
 
         while not self._stop.wait(self.interval):
             now = time.monotonic()
             try:
                 counters = psutil.net_io_counters()
             except OSError as err:
-                warn(f"[SAMPLER] counter read failed: {err}")
+                _log.warning(f"counter read failed: {err}")
                 continue
+            self._record_sample(counters.bytes_sent, counters.bytes_recv, now)
 
-            elapsed = max(now - last_ts, 1e-6)
-            d_bytes = counters.bytes_recv - last_recv
-            u_bytes = counters.bytes_sent - last_sent
-            down_mbps = d_bytes * 8.0 / 1e6 / elapsed
-            up_mbps = u_bytes * 8.0 / 1e6 / elapsed
+    def _record_sample(self, bytes_sent: int, bytes_recv: int, now: float) -> None:
+        """Fold one counter reading into rates, session totals and history.
 
-            with self._lock:
-                self._session_down_bytes += d_bytes
-                self._session_up_bytes += u_bytes
-                self._samples.append(
-                    NetSample(down_mbps=down_mbps, up_mbps=up_mbps, ts=time.time())
-                )
+        The first call after start only seeds the baseline. Deltas are clamped
+        at zero because an adapter reset can drop the counters below the
+        previous reading; without the clamp the widget would briefly show
+        negative speeds and the session totals would shrink.
+        """
+        if self._last_ts is None or self._last_sent is None or self._last_recv is None:
+            self._last_sent = bytes_sent
+            self._last_recv = bytes_recv
+            self._last_ts = now
+            return
 
-            last_sent = counters.bytes_sent
-            last_recv = counters.bytes_recv
-            last_ts = now
+        elapsed = max(now - self._last_ts, 1e-6)
+        d_bytes = max(bytes_recv - self._last_recv, 0)
+        u_bytes = max(bytes_sent - self._last_sent, 0)
+        down_mbps = d_bytes * 8.0 / 1e6 / elapsed
+        up_mbps = u_bytes * 8.0 / 1e6 / elapsed
+
+        with self._lock:
+            self._session_down_bytes += d_bytes
+            self._session_up_bytes += u_bytes
+            self._samples.append(
+                NetSample(down_mbps=down_mbps, up_mbps=up_mbps, ts=time.time())
+            )
+
+        self._last_sent = bytes_sent
+        self._last_recv = bytes_recv
+        self._last_ts = now

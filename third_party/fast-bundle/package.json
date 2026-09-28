@@ -1,0 +1,7 @@
+{
+  "name": "fast-bundle",
+  "private": true,
+  "dependencies": {
+    "fast-cli": "^5.2.0"
+  }
+}

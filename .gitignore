@@ -4,9 +4,16 @@ dist/
 *.spec
 __pycache__/
 
-# Generated for fast.com runtime
+# Generated for the fast.com runtime. The vendored npm tree and node.exe are
+# rebuilt by build.py, but the lockfile is committed: it is what pins the
+# fast-cli tree that ends up inside the released package.
 third_party/node/
-third_party/fast-bundle/
+third_party/fast-bundle/node_modules/
 
 # Others
 /config.json
+
+# Test and linter caches
+.pytest_cache/
+.ruff_cache/
+.venv/

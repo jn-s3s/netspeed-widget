@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Generate release notes from changelog
+        id: notes
+        shell: bash
+        run: |
+          set -e
+          git fetch --tags --force --prune
+
+          VERSION="${NEW_TAG#v}"
+
+          # Refuse any tag that is not the newest dated changelog section.
+          FIRST_DATED="$(sed -nE 's/^## \[([0-9]+\.[0-9]+\.[0-9]+)\] - [0-9]{4}-[0-9]{2}-[0-9]{2}.*$/\1/p' CHANGELOG.md | head -n 1)"
+          if [ "$VERSION" != "$FIRST_DATED" ]; then
+            echo "Tag $NEW_TAG does not match the newest dated section in CHANGELOG.md (${FIRST_DATED:-none}); refusing to release a tag the changelog has not reached." >&2
+            exit 1
+          fi
+
+          # Extract this version's changelog section; fail if it is empty.
+          awk -v header="## [$VERSION]" '
+            { sub(/\r$/, "") }
+            index($0, header " - ") == 1 { in_section = 1; next }
+            in_section && (/^## \[/ || /^\[[^]]+\]:/) { exit }
+            in_section && !started && /^[[:space:]]*$/ { next }
+            in_section { started = 1; print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+
+          if [[ ! -s "$RUNNER_TEMP/notes.md" ]]; then
+            echo "CHANGELOG.md has no entry for version $VERSION (tag $NEW_TAG); refusing to draft a release without curated notes." >&2
+            exit 1
+          fi
+
+          {
+            echo "## 🧾 What's Changed"
+            echo
+            cat "$RUNNER_TEMP/notes.md"
+          } > "$RUNNER_TEMP/RELEASE.md"
+
+          # Previous semver tag for the compare link; --exclude drops pre-release tags.
+          DESCRIBE_ERR=$(mktemp)
+          PREV_TAG="$(git describe --tags --abbrev=0 --match "v[0-9]*.[0-9]*.[0-9]*" --exclude "*-*" --exclude "*+*" "${NEW_TAG}^" 2>"$DESCRIBE_ERR" || true)"
+          ERR="$(cat "$DESCRIBE_ERR" | tr -d '\r\n')"
+          rm -f "$DESCRIBE_ERR"
+          if [ -n "$ERR" ]; then
+            echo "::warning::git describe failed for ${NEW_TAG}^: $ERR"
+          fi
+
+          LOWEST="$(printf '%s\n%s\n' "$PREV_TAG" "$NEW_TAG" | sort -V | head -n 1)"
+          if [ -n "$PREV_TAG" ] && [ "$LOWEST" = "$PREV_TAG" ] && [ "$PREV_TAG" != "$NEW_TAG" ]; then
+            echo -e "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/compare/${PREV_TAG}...${NEW_TAG}" >> "$RUNNER_TEMP/RELEASE.md"
+          else
+            echo -e "\n## 🔗 Full Changelog\nhttps://github.com/${REPO}/releases/tag/${NEW_TAG}" >> "$RUNNER_TEMP/RELEASE.md"
+          fi
+
+          # The upload step owns the GitHub call; only the path crosses over.
+          echo "body_path=$RUNNER_TEMP/RELEASE.md" >> "$GITHUB_OUTPUT"
+        env:
+          NEW_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Pyright type check
+        run: pyright
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Restore build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: build-cache
+        with:
+          path: dist
+          key: build-dist-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('*.py', 'utils/**/*.py', 'tray/**/*.py', 'icon.ico', 'requirements.txt', 'third_party/fast-bundle/package.json', 'third_party/fast-bundle/package-lock.json') }}
+          # restore-keys only warm dist; the exact key still gates the build.
+          restore-keys: |
+            build-dist-${{ runner.os }}-
+
+      - name: Install/Update pip
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Run Build Script
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: python build.py
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+
+      - name: Check build output
+        run: dir dist
+
+      - name: Package Windows x64 release
+        id: archive
+        shell: pwsh
+        run: |
+          # Use the directory build.py produced; re-deriving it would drift.
+          $packages = @(Get-ChildItem -LiteralPath "dist" -Directory)
+          if ($packages.Count -ne 1) {
+              throw "Expected exactly one package directory in dist, found $($packages.Count)"
+          }
+          $package = $packages[0]
+          $executable = Join-Path $package.FullName "$($package.Name).exe"
+          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+              throw "Release executable not found: $executable"
+          }
+
+          $archiveName = "$($package.Name)-windows-x64.zip"
+          $archive = Join-Path "dist" $archiveName
+          # Compress-Archive stays: slower, but its output is the checked one.
+          Compress-Archive -LiteralPath $package.FullName -DestinationPath $archive -Force
+
+          # Only the file name crosses over; the upload owns the dist/ prefix.
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "archive_name=$archiveName"
+
+      - name: Upload GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: NetSpeed Widget ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.body_path }}
+          files: dist/${{ steps.archive.outputs.archive_name }}
+          # Draft first: a maintainer publishes the release by hand.
+          draft: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
