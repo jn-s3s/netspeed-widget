@@ -1,0 +1,70 @@
+name: Bug report
+description: Report a problem with the widget.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill this out. The more detail you give, the faster we can help.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we see the same thing?
+      placeholder: |
+        1. Launch the widget
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Widget version
+      description: Which release are you running? (Check the tray menu or the installer filename.)
+      placeholder: "e.g. v1.3.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "Run `winver` and paste the result."
+      placeholder: "e.g. Windows 11 23H2 (build 22631)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The widget writes a log file next to the exe (or in `%APPDATA%\NetSpeedWidget\logs`).
+        Paste the relevant portion here, or attach the file.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, screen setup, VPN/proxy, anything that might be relevant.
