@@ -1,0 +1,16 @@
+{
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+  "ruff.lineLength": 88,
+  "ruff.targetVersion": "py311",
+  "python.analysis.pythonVersion": "3.11",
+  "files.exclude": {
+    "**/__pycache__": true
+  }
+}

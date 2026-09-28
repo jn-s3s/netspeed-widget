@@ -1,0 +1,22 @@
+# Ruff configuration for NetSpeed Widget.
+# Shared by local runs, lint.ps1 and the GitHub Actions lint workflow.
+
+# Match the Python version releases are built with (release.yml uses 3.11).
+target-version = "py311"
+
+# 88 characters matches the project convention (~/.agents/conventions/python.md).
+line-length = 88
+
+[lint]
+# Ruff's default rule set already carries E, F, I, UP, B and S, so `select` is
+# left unset to track it. E501 is added deliberately: the formatter cannot
+# shorten a long string or comment, so without this rule a line can sit past
+# the limit while both gates stay green.
+extend-select = ["E501"]
+
+# BLE001 (blind except) stays on everywhere, including app.py, hotkeys.py,
+# logger.py and speedtest.py. Those modules do catch broad Exception on
+# purpose, because each one is a boundary whose job is to record the failure
+# and keep the widget running, but a file-wide ignore would also hide any new
+# one added later. Each intentional handler carries its own `# noqa: BLE001`
+# with the reason, so the exception is reviewed at the line that needs it.
