@@ -28,7 +28,8 @@ ruff==0.16.9 \
 # pyright and its dependencies
 pyright==1.1.414 \
     --hash=sha256:2a6b4b3298c9eec174c5ed83bd338de6eee82df2992f3e1930e6199d381be36f
-nodeenv==1.9.1 \
-    --hash=sha256:ba11c9782d29c27c70ffbdda2d7415098754709be8a7056d79a737cd901155c9
+nodeenv==1.10.0 \
+    --hash=sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827 \
+    --hash=sha256:996c191ad80897d076bdfba80a41994c2b47c68e224c542b48feba42ba00f8bb
 typing-extensions==4.14.1 \
     --hash=sha256:d1e1e3b58374dc93031d6eda2420a48ea44a36c2b4766a4fdeb3710755731d76
