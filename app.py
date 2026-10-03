@@ -82,6 +82,7 @@ TICK_REPORT_EVERY = 40
 SPEEDTEST_INTERVAL_SEC = 4 * 60 * 60
 SPEEDTEST_STARTUP_GRACE_SEC = 20
 SPEEDTEST_RETRY_SEC = 15 * 60
+LATENCY_GOOD_MS = 80
 
 # Pill geometry (fixed layout: two text rows plus a large graph)
 PILL_W = 340
@@ -774,12 +775,7 @@ class NetSpeedWidget:
             text, health, dim = "-- ms", Health.WARN, True
         else:
             ms = result.ms
-            if ms < 80:
-                health = Health.GOOD
-            elif ms < 180:
-                health = Health.WARN
-            else:
-                health = Health.BAD
+            health = Health.GOOD if ms < LATENCY_GOOD_MS else Health.WARN
             text, dim = f"{ms:.0f} ms", False
 
         changed = self._record_status(health, result.ts)

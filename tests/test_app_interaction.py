@@ -429,25 +429,46 @@ class TestTickLoop:
 
         assert len(reported) == 2
 
-    @pytest.mark.parametrize("ms", [20, 120, 400])
-    def test_latency_color_bands(self, make_widget, fake_gui, ms):
+    @pytest.mark.parametrize(
+        ("ms", "expected_health"),
+        [
+            (20, app_module.Health.GOOD),
+            (120, app_module.Health.WARN),
+            (400, app_module.Health.WARN),
+        ],
+    )
+    def test_latency_color_bands(self, make_widget, fake_gui, ms, expected_health):
+        """A slow link is degraded, never an outage.
+
+        Red is reserved for a probe that could not reach the host at all, so a
+        high reading must land on warn however slow it gets.
+        """
         widget = make_widget()
         widget.probe.latest = SimpleNamespace(ok=True, ms=ms, ts=0.0)
 
         widget._render_latency()
 
         assert fake_gui.canvas.text_of(widget._t_ping) == f"{ms:.0f} ms"
+        assert widget._health == expected_health
         palette = app_module.THEMES["Default"]
-        expected_color = {
-            20: palette.down,
-            120: palette.warn,
-            400: palette.bad,
-        }[ms]
-        expected_up_color = palette.up if ms == 20 else expected_color
-        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == expected_color
+        assert fake_gui.canvas.items[widget._t_down_val]["fill"] == (
+            app_module.status_download_color(expected_health, palette)
+        )
+        expected_up_color = app_module.status_upload_color(expected_health, palette)
         assert fake_gui.canvas.items[widget._t_up_val]["fill"] == expected_up_color
         assert fake_gui.canvas.items[widget._t_up_arrow]["fill"] == expected_up_color
         assert fake_gui.canvas.items[widget._t_st_up]["fill"] == expected_up_color
+
+    def test_only_a_failed_probe_turns_the_widget_red(self, make_widget, fake_gui):
+        """Red must not be reachable from any latency value that still answered."""
+        widget = make_widget()
+        palette = app_module.THEMES["Default"]
+
+        for ms in (0, 79, 80, 179, 180, 10_000):
+            widget.probe.latest = SimpleNamespace(ok=True, ms=float(ms), ts=0.0)
+            widget._render_latency()
+            assert widget._health is not app_module.Health.BAD, f"{ms} ms went red"
+            assert fake_gui.canvas.items[widget._dot_item]["fill"] != palette.bad
 
     def test_offline_recolors_speed_rows_to_red(self, make_widget, fake_gui):
         widget = make_widget()
