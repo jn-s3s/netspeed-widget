@@ -15,8 +15,8 @@ A tiny always-on-top widget for Windows that shows your live network speed, ping
 ## What it shows
 
 - Live download and upload speed, in Mb/s.
-- Latency to a fast CDN server, measured with a plain TCP connect (with an ICMP ping as a fallback when outbound TCP is blocked). A colored dot tells you at a glance whether things look good, slow or offline.
-- A rolling graph of the last minute of traffic that rescales itself to the biggest spike, so busy and quiet moments both stay readable. Each segment is tinted by the latency health recorded at that moment (frozen during speedtests), so you can see when things went red.
+- Latency to a nearby anycast endpoint, measured with a plain TCP connect (with an ICMP ping as a fallback when outbound TCP is blocked). The address is answered by the nearest server, so the number reflects your own connection rather than one CDN's routing. A colored dot tells you at a glance whether things look good, slow or offline. Slow readings warn; red is reserved for a probe that never reached its target.
+- A rolling graph of the last minute of traffic that rescales itself to the biggest spike, so busy and quiet moments both stay readable. Each segment is tinted by the latency health recorded at that moment (frozen during speedtests), so you can see when the link dropped rather than when it was merely slow.
 - Your last speedtest result on the widget itself (a smaller second row), plus the right-click menu and tray tooltip.
 - It follows your screens: if the display it was sitting on gets disconnected or disabled, it snaps back to the active screen instead of hiding off-screen.
 - How much data you have downloaded and uploaded since you started the app (right-click menu).
@@ -144,7 +144,7 @@ CI runs the same command on every push and pull request, and again before every 
 
 - `app.py` - the widget itself: window, text rows, menus, interaction and the tick loop.
 - `utils/sampler.py` - reads network counters once a second and keeps history.
-- `utils/latency.py` - probes latency in the background.
+- `utils/latency.py` - probes latency in the background against an anycast address.
 - `utils/hotkeys.py` - registers the global show/hide hotkey and listens for it.
 - `utils/hotkey_dialog.py` - the capture window used to rebind that hotkey.
 - `utils/speedtest.py` - the speedtest provider chain.
