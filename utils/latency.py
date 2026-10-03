@@ -4,6 +4,17 @@ A TCP handshake to a well-known host is a solid latency estimate and is
 far cheaper than spawning ping.exe every second. A single ICMP ping is
 kept as a second opinion, used only when TCP fails, to tell a real
 outage apart from a blocked port.
+
+The target is an anycast address rather than a hostname. Anycast means the
+packet is answered by the nearest of thousands of identical endpoints, so the
+number tracks the distance to the ISP instead of the load-balancing choice of
+one CDN, and an IP literal skips the DNS lookup that would otherwise fold
+resolver latency into every reading.
+
+Timing uses perf_counter rather than monotonic because Windows backs
+monotonic with GetTickCount64, which advances only every 15.6 ms. That is the
+same order as the numbers being measured, so it quantized every reading to a
+multiple of 15.6 and reported a fast link as 0 or 15 ms.
 """
 
 import socket
@@ -16,7 +27,7 @@ from utils.logger import get
 
 _log = get("net")
 
-PING_HOST = "fast.com"
+PING_HOST = "1.1.1.1"
 PING_PORT = 443
 
 
@@ -91,10 +102,10 @@ class LatencyProbe:
             self._stop.wait(self.interval)
 
     def _measure(self) -> LatencyResult:
-        start = time.monotonic()
+        start = time.perf_counter()
         try:
             with socket.create_connection((self.host, self.port), timeout=self.timeout):
-                ms = (time.monotonic() - start) * 1000.0
+                ms = (time.perf_counter() - start) * 1000.0
                 return LatencyResult(ms=ms, ok=True, ts=time.time())
         except OSError:
             pass  # documented contract: fall through to the ICMP second opinion
