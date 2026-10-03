@@ -8,6 +8,17 @@ Pushing a `v*` tag runs the release workflow, which builds the app and drafts a 
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-03
+
+### Fixed
+
+- High latency only tints the widget warning; red is reserved for a probe that never reached its target
+- Latency timed with a high resolution clock, since the Windows monotonic clock only advances every 15.6 ms and snapped readings to that step
+
+### Changed
+
+- Latency is measured against a nearby anycast address instead of the fast.com CDN, so the reading reflects your own connection rather than one CDN's routing
+
 ## [1.1.0] - 2026-09-28
 
 ### Added
@@ -63,6 +74,7 @@ Initial release of the NetSpeed Widget — a small always-on-top Windows widget 
 - Logger for diagnostics and troubleshooting
 - Modular code structure with separated concerns
 
-[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jn-s3s/netspeed-widget/releases/tag/v1.0.0
