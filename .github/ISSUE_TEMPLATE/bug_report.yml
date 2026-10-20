@@ -40,8 +40,8 @@ body:
     id: version
     attributes:
       label: Widget version
-      description: Which release are you running? (Check the tray menu or the installer filename.)
-      placeholder: "e.g. v1.3.0"
+      description: Which version are you running? Check the release ZIP filename or the executable's Details properties. For source builds, include the commit hash.
+      placeholder: "e.g. v2.0.0"
     validations:
       required: true
 
@@ -59,7 +59,7 @@ body:
     attributes:
       label: Logs
       description: |
-        The widget writes a log file next to the exe (or in `%APPDATA%\NetSpeedWidget\logs`).
+        The widget writes its log to `%APPDATA%\NetSpeedWidget\log.txt`.
         Paste the relevant portion here, or attach the file.
       render: text
 
