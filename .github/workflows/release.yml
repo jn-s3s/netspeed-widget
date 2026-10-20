@@ -81,74 +81,40 @@ jobs:
           NEW_TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
 
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: "3.11"
+      - name: Rust quality checks
+        uses: ./.github/actions/rust-checks
 
-      - name: Install dependencies
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install -r requirements-dev.txt
-
-      - name: Ruff lint
-        run: ruff check .
-
-      - name: Ruff format check
-        run: ruff format --check .
-
-      - name: Pyright type check
-        run: pyright
-
-      - name: Run tests
-        run: python -m pytest tests -q
-
-      - name: Restore build cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        id: build-cache
-        with:
-          path: dist
-          key: build-dist-${{ runner.os }}-${{ github.ref_name }}-${{ hashFiles('*.py', 'utils/**/*.py', 'tray/**/*.py', 'icon.ico', 'requirements.txt', 'third_party/fast-bundle/package.json', 'third_party/fast-bundle/package-lock.json') }}
-          # restore-keys only warm dist; the exact key still gates the build.
-          restore-keys: |
-            build-dist-${{ runner.os }}-
-
-      - name: Install/Update pip
-        if: steps.build-cache.outputs.cache-hit != 'true'
-        run: |
-          python -m pip install --upgrade pip
-
-      - name: Run Build Script
-        if: steps.build-cache.outputs.cache-hit != 'true'
-        run: python build.py
+      - name: Verify package version matches tag
         env:
-          APP_VERSION: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ("v$($metadata.packages[0].version)" -ne $env:RELEASE_TAG) {
+              throw "Cargo.toml version does not match tag $env:RELEASE_TAG"
+          }
 
-      - name: Check build output
-        run: dir dist
+      - name: Build Rust executable
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Package Windows x64 release
         id: archive
         shell: pwsh
         run: |
-          # Use the directory build.py produced; re-deriving it would drift.
-          $packages = @(Get-ChildItem -LiteralPath "dist" -Directory)
-          if ($packages.Count -ne 1) {
-              throw "Expected exactly one package directory in dist, found $($packages.Count)"
-          }
-          $package = $packages[0]
-          $executable = Join-Path $package.FullName "$($package.Name).exe"
-          if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-              throw "Release executable not found: $executable"
-          }
-
-          $archiveName = "$($package.Name)-windows-x64.zip"
+          $packageName = "NetSpeedWidget-$env:RELEASE_TAG"
+          $package = Join-Path "dist" $packageName
+          New-Item -ItemType Directory -Path $package -Force | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/netspeed-widget.exe" $package
+          Copy-Item "LICENSE", "README.md" $package
+          $archiveName = "$packageName-windows-x64.zip"
           $archive = Join-Path "dist" $archiveName
           # Compress-Archive stays: slower, but its output is the checked one.
-          Compress-Archive -LiteralPath $package.FullName -DestinationPath $archive -Force
+          Compress-Archive -LiteralPath $package -DestinationPath $archive -Force
 
           # Only the file name crosses over; the upload owns the dist/ prefix.
           Add-Content -Path $env:GITHUB_OUTPUT -Value "archive_name=$archiveName"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
 
       - name: Upload GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3

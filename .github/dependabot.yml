@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # Python dependencies (requirements.txt)
-  - package-ecosystem: "pip"
+  # Native Rust application dependencies
+  - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -9,7 +9,7 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-      - "python"
+      - "rust"
     commit-message:
       prefix: "deps"
 
