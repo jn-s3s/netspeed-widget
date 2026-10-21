@@ -4,7 +4,10 @@ A native Windows taskbar widget that shows live download/upload speed, latency,
 and a rolling traffic graph.
 
 [![CI](https://github.com/jn-s3s/netspeed-widget/actions/workflows/ci.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/ci.yml)
+[![Release](https://github.com/jn-s3s/netspeed-widget/actions/workflows/release.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+![NetSpeed Widget showing live speeds and a traffic graph in the Windows taskbar](screenshots/taskbar-widget.svg)
 
 ## Run
 
