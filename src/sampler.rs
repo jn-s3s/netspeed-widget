@@ -78,11 +78,16 @@ impl NetSampler {
         let history = self.history;
         let stop = Arc::clone(&self.stop);
         let state = Arc::clone(&self.state);
-        let handle = std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("net-sampler".to_string())
             .spawn(move || sample_loop(interval, history, state, stop))
-            .ok();
-        *worker = handle;
+        {
+            Ok(handle) => *worker = Some(handle),
+            Err(err) => logger::error(
+                "sampler",
+                &format!("could not start sampling thread: {err}"),
+            ),
+        }
     }
 
     /// Signals the sampling thread to exit.
@@ -90,7 +95,9 @@ impl NetSampler {
         self.stop.store(true, Ordering::Relaxed);
         let mut worker = self.worker.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(handle) = worker.take() {
-            let _ = handle.join();
+            if handle.join().is_err() {
+                logger::error("sampler", "sampling thread panicked");
+            }
         }
     }
 
@@ -123,7 +130,7 @@ impl NetSampler {
 /// reading; without the clamp the widget would briefly show negative speeds
 /// and the session totals would shrink.
 fn record_sample(
-    state: &Arc<Mutex<State>>,
+    state: &Mutex<State>,
     history: usize,
     bytes_sent: u64,
     bytes_recv: u64,
@@ -170,6 +177,8 @@ pub struct NetworkCounters {
 
 /// Reads the current octet totals of every interface.
 pub fn read_network_counters() -> Option<NetworkCounters> {
+    // SAFETY: GetIfTable2 initializes the table pointer. A successful allocation
+    // contains NumEntries rows, borrowed only until its matching FreeMibTable.
     unsafe {
         let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
         let status = GetIfTable2(&mut table);

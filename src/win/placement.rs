@@ -237,7 +237,9 @@ unsafe fn walk(
         ));
     }
     // UIA reports a null child/sibling as an error at the end of a branch.
-    let mut child = optional_element(walker.GetFirstChildElement(parent))?;
+    // SAFETY: The caller keeps the UIA walker and parent on the initialized COM
+    // thread. Returned elements remain owned COM references during recursion.
+    let mut child = optional_element(unsafe { walker.GetFirstChildElement(parent) })?;
     while let Some(element) = child {
         if *budget == 0 {
             return Err(windows::core::Error::new(
@@ -246,9 +248,14 @@ unsafe fn walk(
             ));
         }
         *budget -= 1;
-        let handle = element.CurrentNativeWindowHandle()?;
-        if handle.0 as isize != request.widget && !element.CurrentIsOffscreen()?.as_bool() {
-            let kind = element.CurrentControlType()?;
+        // SAFETY: element is a live UIA reference on this COM thread.
+        let handle = unsafe { element.CurrentNativeWindowHandle() }?;
+        if handle.0 as isize != request.widget
+            // SAFETY: The same live element is queried without releasing it.
+            && !unsafe { element.CurrentIsOffscreen() }?.as_bool()
+        {
+            // SAFETY: element remains a live UIA reference on this COM thread.
+            let kind = unsafe { element.CurrentControlType() }?;
             // Container rectangles often span the whole taskbar. Only reserve
             // actual controls, not the XAML host or task-list background.
             if [
@@ -266,14 +273,17 @@ unsafe fn walk(
             ]
             .contains(&kind)
             {
-                let rect = element.CurrentBoundingRectangle()?;
+                // SAFETY: element remains a live UIA reference on this COM thread.
+                let rect = unsafe { element.CurrentBoundingRectangle() }?;
                 if overlaps(rect, request.rect) {
                     occupied.push(rect);
                 }
             }
-            walk(walker, &element, request, occupied, budget, depth + 1)?;
+            // SAFETY: Recursion uses the same COM thread and live references.
+            unsafe { walk(walker, &element, request, occupied, budget, depth + 1) }?;
         }
-        child = optional_element(walker.GetNextSiblingElement(&element))?;
+        // SAFETY: walker and element are live on the initialized COM thread.
+        child = optional_element(unsafe { walker.GetNextSiblingElement(&element) })?;
     }
     Ok(())
 }
@@ -302,10 +312,14 @@ unsafe fn native_tools(bar: HWND, widget: HWND, occupied: &mut Vec<RECT>) {
         hwnd: HWND,
         data: windows::Win32::Foundation::LPARAM,
     ) -> windows::Win32::Foundation::BOOL {
-        let search = &mut *(data.0 as *mut Search);
+        // SAFETY: EnumChildWindows invokes this synchronously with the exclusive
+        // Search pointer below. Its output vector lives for the whole scan.
+        let search = unsafe { &mut *(data.0 as *mut Search) };
         if hwnd != search.widget
-            && GetParent(hwnd).ok() == Some(search.bar)
-            && IsWindowVisible(hwnd).as_bool()
+            // SAFETY: hwnd is supplied by the active window enumeration.
+            && unsafe { GetParent(hwnd) }.is_ok_and(|parent| parent == search.bar)
+            // SAFETY: Visibility is queried for the same enumerated window.
+            && unsafe { IsWindowVisible(hwnd) }.as_bool()
         {
             let class = taskbar::class_name(hwnd);
             if !matches!(
@@ -318,7 +332,9 @@ unsafe fn native_tools(bar: HWND, widget: HWND, occupied: &mut Vec<RECT>) {
                     | "WorkerW"
             ) {
                 if let Some(rect) = taskbar::window_rect(hwnd) {
-                    (*search.rects).push(rect);
+                    // SAFETY: The caller lends occupied exclusively throughout
+                    // enumeration and no other reference accesses it here.
+                    unsafe { (*search.rects).push(rect) };
                 }
             }
         }
@@ -329,11 +345,15 @@ unsafe fn native_tools(bar: HWND, widget: HWND, occupied: &mut Vec<RECT>) {
         widget,
         rects: occupied,
     };
-    let _ = EnumChildWindows(
-        bar,
-        Some(visit),
-        windows::Win32::Foundation::LPARAM(&mut search as *mut _ as isize),
-    );
+    // SAFETY: search and its exclusive output vector outlive this synchronous
+    // enumeration; visit uses the matching system ABI and pointer type.
+    unsafe {
+        let _ = EnumChildWindows(
+            bar,
+            Some(visit),
+            windows::Win32::Foundation::LPARAM(&mut search as *mut _ as isize),
+        );
+    }
 }
 
 fn overlaps(a: RECT, b: RECT) -> bool {

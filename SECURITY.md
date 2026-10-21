@@ -4,9 +4,9 @@
 
 This policy covers NetSpeed Widget 2.x. Only the latest 2.x release receives security fixes. Use the latest available 2.x build when reporting an issue.
 
-| Version        | Supported |
-| -------------- | --------- |
-| Latest 2.x     | Yes       |
+| Version    | Supported |
+| ---------- | --------- |
+| Latest 2.x | Yes       |
 
 ## How to report a vulnerability
 
@@ -22,7 +22,7 @@ If private reporting is unavailable for any reason, open a minimal public issue 
 
 - The NetSpeed Widget version affected (check the release ZIP filename or executable's Details properties)
 - Steps or a proof of concept showing how the issue manifests
-- Which component is involved if you know it (HTTPS speedtest, optional fast-cli provider, config or log file handling, global hotkey registration, taskbar integration, tray icon)
+- Which component is involved if you know it (HTTPS speedtest, config or log file handling, global hotkey registration, taskbar integration, tray icon)
 
 ## What to expect
 
@@ -34,9 +34,7 @@ Please do not disclose the issue publicly until a fix has been released.
 
 NetSpeed Widget runs with your user privileges and stores no secrets: its only local state is a small config file and a log file under `%APPDATA%\NetSpeedWidget`. Reports are in scope when they show behavior beyond what the app legitimately does, such as:
 
-- Command injection or argument smuggling through an optional fast-cli provider (a manually installed Node/fast-cli bundle, or `fast.exe` / `fast-cli.exe` on PATH)
 - Unsafe path handling when resolving bundled resources or the config and log files
-- Unexpected code execution when resolving or launching optional speedtest providers; standard release ZIPs contain no Node runtime or fast-cli bundle
 - Unexpected outbound connections beyond the app's latency probes and speedtest traffic
 
-The widget opens no network listeners. It makes outbound HTTPS speedtest requests and TCP/ICMP latency probes, and integrates with Explorer through Windows APIs. Reports may involve local input, optional provider execution or remote measurement responses.
+The widget opens no network listeners. It makes outbound HTTPS speedtest requests and TCP/ICMP latency probes, and integrates with Explorer through Windows APIs. Reports may involve local input or remote measurement responses.

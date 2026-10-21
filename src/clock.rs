@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Returns Unix epoch seconds, or zero if the system clock predates the epoch.
 pub fn now_epoch() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

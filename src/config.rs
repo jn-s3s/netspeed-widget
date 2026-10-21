@@ -289,7 +289,7 @@ fn save(config: &Config, path: &std::path::Path) {
             "config",
             &format!("failed to save config via {}: {err}", staging.display()),
         );
-        let _ = fs::remove_file(&staging);
+        remove_staging_file(&staging);
         return;
     }
     if let Err(err) = fs::rename(&staging, path) {
@@ -297,7 +297,19 @@ fn save(config: &Config, path: &std::path::Path) {
             "config",
             &format!("failed to replace config at {}: {err}", path.display()),
         );
-        let _ = fs::remove_file(&staging);
+        remove_staging_file(&staging);
+    }
+}
+
+fn remove_staging_file(path: &std::path::Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        // A failed staging write need not have created a file.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => logger::warning(
+            "config",
+            &format!("could not remove staging file {}: {err}", path.display()),
+        ),
     }
 }
 
@@ -328,7 +340,7 @@ fn mutate_cached(
 }
 
 /// The saved preset name, or Default when missing or invalid.
-pub fn get_theme() -> String {
+pub fn theme() -> String {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     match guard.theme.as_deref() {
         Some(name) if theme_names().contains(&name) => name.to_string(),
@@ -345,7 +357,7 @@ pub fn set_theme(name: &str) {
 }
 
 /// The global show/hide hotkey combo, or the default when unusable.
-pub fn get_hotkey() -> String {
+pub fn hotkey() -> String {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     match guard.hotkey.as_deref() {
         Some(combo) if !combo.trim().is_empty() => combo.to_string(),
@@ -359,7 +371,7 @@ pub fn set_hotkey(combo: &str) {
 }
 
 /// The last persisted speedtest, if there is a usable one.
-pub fn get_speedtest() -> Option<SpeedtestRecord> {
+pub fn speedtest() -> Option<SpeedtestRecord> {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.speedtest
 }
@@ -376,7 +388,7 @@ pub fn set_speedtest(down_mbps: f64, up_mbps: f64) -> SpeedtestRecord {
 }
 
 /// Where the widget sits inside the taskbar.
-pub fn get_placement() -> Placement {
+pub fn placement() -> Placement {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.placement.unwrap_or_default()
 }
@@ -387,7 +399,7 @@ pub fn set_placement(placement: Placement) {
 }
 
 /// Whether the traffic graph is drawn.
-pub fn get_show_graph() -> bool {
+pub fn show_graph() -> bool {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.show_graph.unwrap_or(true)
 }
@@ -398,7 +410,7 @@ pub fn set_show_graph(value: bool) {
 }
 
 /// Whether the taskbar widget is visible.
-pub fn get_widget_visible() -> bool {
+pub fn widget_visible() -> bool {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.widget_visible.unwrap_or(true)
 }
@@ -409,7 +421,7 @@ pub fn set_widget_visible(value: bool) {
 }
 
 /// The display device the widget is pinned to, if one was chosen.
-pub fn get_taskbar_monitor() -> Option<String> {
+pub fn taskbar_monitor() -> Option<String> {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.taskbar_monitor.clone()
 }

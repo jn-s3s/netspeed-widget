@@ -97,11 +97,13 @@ impl LatencyProbe {
         let timeout = self.timeout;
         let latest = Arc::clone(&self.latest);
         let stop = Arc::clone(&self.stop);
-        let handle = std::thread::Builder::new()
+        match std::thread::Builder::new()
             .name("latency-probe".to_string())
             .spawn(move || probe_loop(interval, timeout, latest, stop))
-            .ok();
-        *worker = handle;
+        {
+            Ok(handle) => *worker = Some(handle),
+            Err(err) => logger::error("net", &format!("could not start latency thread: {err}")),
+        }
     }
 
     /// Signals the probe thread to exit.
@@ -176,9 +178,11 @@ fn measure(timeout: Duration, stop: &AtomicBool) -> LatencyResult {
 
 /// Single ICMP echo via the OS ping tool. Fallback path only.
 fn icmp_ping() -> bool {
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut directory = [0_u16; 32768];
+    // SAFETY: The API receives a writable UTF-16 buffer and its length.
     let length = unsafe {
         windows::Win32::System::SystemInformation::GetSystemDirectoryW(Some(&mut directory))
     } as usize;
@@ -186,8 +190,8 @@ fn icmp_ping() -> bool {
         logger::warning("net", "could not resolve the Windows system directory");
         return false;
     }
-    let ping =
-        std::path::PathBuf::from(String::from_utf16_lossy(&directory[..length])).join("ping.exe");
+    let ping = std::path::PathBuf::from(std::ffi::OsString::from_wide(&directory[..length]))
+        .join("ping.exe");
     let result = std::process::Command::new(ping)
         .args([PING_HOST, "-n", "1", "-w", "1000"])
         .creation_flags(CREATE_NO_WINDOW)

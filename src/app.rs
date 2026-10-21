@@ -197,7 +197,7 @@ pub fn run() -> Result<(), String> {
     .map_err(|err| format!("could not create the controller window: {err}"))?;
 
     let icon = load_icon();
-    let theme_name = config::get_theme();
+    let theme_name = config::theme();
     let config::DisplayPreferences {
         layout,
         units,
@@ -207,23 +207,23 @@ pub fn run() -> Result<(), String> {
     } = config::display_preferences();
     let appearance = Appearance::current();
     let palette = theme::resolved_palette(&theme_name, appearance, subtle_background);
-    let show_graph = config::get_show_graph();
-    let widget_visible = config::get_widget_visible();
-    let placement = config::get_placement();
-    let hotkey_combo = config::get_hotkey();
+    let show_graph = config::show_graph();
+    let widget_visible = config::widget_visible();
+    let placement = config::placement();
+    let hotkey_combo = config::hotkey();
     let sampler = NetSampler::new(Duration::from_secs(1), GRAPH_SAMPLES);
     let probe = LatencyProbe::new(Duration::from_secs(2), Duration::from_millis(1500));
 
     let height = 48;
     let width = paint::widget_width(layout, show_graph, 96);
     let next_due = next_speedtest_due(
-        config::get_speedtest().as_ref(),
+        config::speedtest().as_ref(),
         now_epoch(),
         SPEEDTEST_INTERVAL_SEC,
         SPEEDTEST_STARTUP_GRACE_SEC,
     );
 
-    let saved_test = config::get_speedtest();
+    let saved_test = config::speedtest();
     let state = AppState {
         controller,
         widget: HWND::default(),
@@ -349,11 +349,14 @@ unsafe fn register_class(
         style: CS_DBLCLKS,
         lpfnWndProc: Some(proc),
         hInstance: hinstance,
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+        // SAFETY: IDC_ARROW is a predefined system cursor and needs no instance.
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
         lpszClassName: PCWSTR(name.as_ptr()),
         ..Default::default()
     };
-    let _ = RegisterClassExW(&wc);
+    // SAFETY: The caller provides a live instance, a terminated class name and
+    // a system-ABI window procedure; RegisterClassExW copies the class data.
+    let _ = unsafe { RegisterClassExW(&wc) };
 }
 
 /// Only file-loaded icons are owned; LoadIconW returns shared resources.
@@ -464,7 +467,7 @@ fn create_widget(hinstance: HINSTANCE, class: &[u16]) {
 /// Re-evaluate the saved monitor preference even while a fallback remains valid.
 fn preferred_taskbar() -> Option<TaskbarWindow> {
     let taskbars = taskbar::find_taskbars();
-    let wanted = config::get_taskbar_monitor();
+    let wanted = config::taskbar_monitor();
     let mut chosen: Option<TaskbarWindow> = None;
     if let Some(device) = wanted.as_deref() {
         chosen = taskbars
@@ -885,7 +888,8 @@ unsafe extern "system" fn controller_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let result = controller_message(hwnd, msg, wparam, lparam);
+    // SAFETY: Windows supplies the controller's live window and message payload.
+    let result = unsafe { controller_message(hwnd, msg, wparam, lparam) };
     flush_native_effects();
     result
 }
@@ -917,7 +921,8 @@ unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
             LRESULT(0)
         }
         WM_DESTROY => {
-            PostQuitMessage(0);
+            // SAFETY: This runs on the UI thread that owns the message loop.
+            unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
@@ -931,7 +936,8 @@ unsafe extern "system" fn widget_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let result = widget_message(hwnd, msg, wparam, lparam);
+    // SAFETY: Windows supplies the widget's live window and message payload.
+    let result = unsafe { widget_message(hwnd, msg, wparam, lparam) };
     flush_native_effects();
     result
 }
@@ -940,8 +946,12 @@ unsafe fn widget_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -
     match msg {
         WM_PAINT => {
             let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
-            let _ = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut ps);
-            let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
+            // SAFETY: This handles WM_PAINT for hwnd and pairs the paint calls
+            // with the same initialized PAINTSTRUCT before returning.
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut ps);
+                let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -1404,7 +1414,7 @@ fn details_snapshot(state: &AppState) -> details::Snapshot {
         "ICMP reachable; TCP probe blocked".to_string()
     };
     let (down, up) = state.sampler.session_totals();
-    let speedtest = config::get_speedtest()
+    let speedtest = config::speedtest()
         .map(|test| {
             let source =
                 config::speedtest_source().unwrap_or_else(|| "provider not recorded".to_string());
@@ -1638,7 +1648,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
     let taskbars = taskbar::find_taskbars();
     state.menu_devices = taskbars.iter().map(taskbar::monitor_device).collect();
     if taskbars.len() > 1 {
-        let current = config::get_taskbar_monitor();
+        let current = config::taskbar_monitor();
         let items: Vec<MenuEntry> = taskbars
             .iter()
             .enumerate()

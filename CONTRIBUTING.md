@@ -2,13 +2,17 @@
 
 ## Setup and checks
 
-Use Windows with stable Rust (MSVC), Visual Studio C++ build tools and the Windows
-SDK. Run `cargo run --locked` to start the widget. Before opening a pull request:
+Use Windows with the stable Rust toolchain pinned in `rust-toolchain.toml` (MSVC),
+Visual Studio C++ build tools and the Windows SDK. Rustup uses the same compiler,
+rustfmt and Clippy versions locally and in CI. Run `cargo run --locked` to start
+the widget. Format changes with `cargo fmt --all`. Before opening a pull request:
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+$env:RUSTDOCFLAGS = '-D warnings'
+cargo doc --locked --workspace --no-deps
 cargo build --release --locked
 ```
 
@@ -17,6 +21,10 @@ copy with isolated `APPDATA`. Tests must not depend on public Internet access or
 write to the user's real settings. Keep `Cargo.lock` committed for reproducible
 application builds.
 
+`Cargo.toml` declares the MSRV, tested separately in CI. To check it locally,
+install that version with `rustup toolchain install <rust-version> --profile minimal`
+and run `cargo +<rust-version> test --locked --workspace`.
+
 Verifying the window layer requires a developer desktop with Explorer running.
 Without `Shell_TrayWnd` (as on headless CI runners), the lifecycle suite skips all
 window-layer assertions and emits a CI warning. A green CI check alone does not
@@ -24,8 +32,43 @@ verify taskbar parenting, input, popup stacking, recovery or shutdown. Run
 `cargo test --locked --test windows_lifecycle -- --show-output` on a desktop
 before accepting changes to these behaviors.
 
+## Visual Studio Code
+
+Open the repository folder and use **Extensions: Show Recommended Extensions**
+to install the suggestions from `.vscode/extensions.json`:
+
+- **rust-analyzer** (`rust-lang.rust-analyzer`): Rust navigation, completion,
+  rustfmt formatting and Clippy diagnostics.
+- **Even Better TOML** (`tamasfe.even-better-toml`): Cargo and toolchain TOML support.
+- **GitHub Actions** (`GitHub.vscode-github-actions`): workflow editing and validation.
+- **CodeLLDB** (`vadimcn.vscode-lldb`): optional Rust debugging with F5.
+
+Workspace settings use four-space Rust indentation, a 100-column ruler and
+format-on-save through rustfmt. Rust Analyzer runs Clippy with warnings denied;
+neither overrides the repository's formatter or toolchain configuration.
+Run **Tasks: Run Task → Rust: Check conventions** for the same formatting,
+lint, test and documentation checks as CI. Ctrl+Shift+B builds the debug binary.
+
+The F5 configuration builds through Cargo and stores debug settings and logs in
+`target/vscode-appdata`, separate from normal user settings. Quit the installed
+widget before debugging or running lifecycle tests: the single-instance mutex
+still applies. Windows C++ build tools and the SDK are required regardless of
+which extensions are installed.
+
 ## Conventions
 
+- Follow the Rust Style Guide and Rust API Guidelines, preserving the existing
+  edition and MSRV. Use four spaces and rustfmt's 100-character default width;
+  `rustfmt.toml` records these requirements. Tool configuration follows these
+  conventions, not the reverse.
+- Use idiomatic names, borrowed views where ownership is unnecessary, and private
+  implementation details. Prefer `name()` to `get_name()` for getters.
+- Propagate recoverable errors or handle them at a reporting boundary. Explain
+  intentional result discards; reserve panics for proven invariants and tests.
+- Document public APIs and unsafe preconditions. Use explicit unsafe blocks even
+  inside unsafe functions, with a `SAFETY` comment explaining each invariant.
+- Start with default Clippy lints. Keep any extra lints deliberate and any
+  suppressions narrow, reasoned and preferably expressed with `#[expect]`.
 - Keep all window calls and application state on the UI thread. Workers publish
   results through snapshots or posted messages, never by calling UI functions.
 - Only embed the widget as a child of a taskbar window. Never attach its input

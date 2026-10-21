@@ -51,7 +51,10 @@ fn default_palette() -> Palette {
 ///
 /// A palette names every colour it uses, so the argument list is long by
 /// nature rather than by accident.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "palette presets specify each named color and the light-mode flag"
+)]
 fn palette(
     surface: &str,
     border: &str,

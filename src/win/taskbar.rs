@@ -72,7 +72,9 @@ const TRAY_CLASSES: [&str; 5] = [
 /// Collects every taskbar window on the desktop.
 pub fn find_taskbars() -> Vec<TaskbarWindow> {
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let taskbars = &mut *(lparam.0 as *mut Vec<TaskbarWindow>);
+        // SAFETY: EnumWindows synchronously passes the exclusive vector pointer
+        // supplied below; the vector lives until enumeration returns.
+        let taskbars = unsafe { &mut *(lparam.0 as *mut Vec<TaskbarWindow>) };
         let class_name = class_name(hwnd);
         if class_name == "Shell_TrayWnd" || class_name == "Shell_SecondaryTrayWnd" {
             if let Some(rect) = taskbar_rect(hwnd) {
@@ -148,7 +150,9 @@ struct DescendantSearch<'a> {
 /// against a list of known names.
 pub fn find_descendant(parent: HWND, classes: &[&str]) -> Option<HWND> {
     unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let search = &mut *(lparam.0 as *mut DescendantSearch);
+        // SAFETY: EnumChildWindows synchronously passes the exclusive search
+        // pointer supplied below; search and its borrowed classes remain live.
+        let search = unsafe { &mut *(lparam.0 as *mut DescendantSearch) };
         if search.found.is_some() {
             return BOOL(0);
         }

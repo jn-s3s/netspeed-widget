@@ -73,7 +73,9 @@ fn append(block: &str) {
     let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let path = &*LOG_PATH;
     if should_rotate(path, block.len() as u64) {
-        rotate(path);
+        if let Err(err) = rotate(path) {
+            eprintln!("[ERROR] [LOG] rotation failed: {err}");
+        }
     }
     if let Err(err) = append_block(path, block) {
         eprintln!("[ERROR] [LOG] write failed: {err} | dropped: {block}");
@@ -95,16 +97,24 @@ fn should_rotate(path: &Path, incoming: u64) -> bool {
 }
 
 /// Shifts the log through the numbered backups, dropping the oldest.
-fn rotate(path: &PathBuf) {
-    let stem = path.to_string_lossy().to_string();
+fn rotate(path: &Path) -> std::io::Result<()> {
     for index in (1..ROTATED_FILES).rev() {
-        let older = PathBuf::from(format!("{stem}.{index}"));
-        if older.exists() {
-            let _ = fs::rename(&older, PathBuf::from(format!("{stem}.{}", index + 1)));
-        }
+        rename_if_present(&backup_path(path, index), &backup_path(path, index + 1))?;
     }
-    if path.exists() {
-        let _ = fs::rename(path, PathBuf::from(format!("{stem}.1")));
+    rename_if_present(path, &backup_path(path, 1))
+}
+
+fn backup_path(path: &Path, index: u32) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
+
+fn rename_if_present(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
     }
 }
 
@@ -160,11 +170,11 @@ mod tests {
         assert!(!should_rotate(&path, 1));
         assert!(should_rotate(&path, 2));
         fs::write(&path, "first").unwrap();
-        rotate(&path);
+        rotate(&path).unwrap();
         fs::write(&path, "second").unwrap();
-        rotate(&path);
+        rotate(&path).unwrap();
         fs::write(&path, "third").unwrap();
-        rotate(&path);
+        rotate(&path).unwrap();
         assert_eq!(
             fs::read_to_string(directory.join("log.txt.1")).unwrap(),
             "third"
@@ -175,6 +185,43 @@ mod tests {
         );
         fs::remove_file(directory.join("log.txt.1")).unwrap();
         fs::remove_file(directory.join("log.txt.2")).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn backup_names_preserve_non_unicode_paths() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let name = std::ffi::OsString::from_wide(&[0xD800, b'.' as u16, b'l' as u16]);
+        let backup = backup_path(Path::new(&name), 2);
+        let mut expected: Vec<u16> = name.encode_wide().collect();
+        expected.extend(".2".encode_utf16());
+        assert_eq!(
+            backup.as_os_str().encode_wide().collect::<Vec<_>>(),
+            expected
+        );
+    }
+
+    #[test]
+    fn rollover_reports_failures_without_removing_the_log() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let directory =
+            std::env::temp_dir().join(format!("netspeed-log-failure-test-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("log.txt");
+        fs::write(&path, "preserved").unwrap();
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+
+        assert!(rotate(&path).is_err());
+        drop(locked);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "preserved");
+
+        fs::remove_file(&path).unwrap();
         fs::remove_dir(directory).unwrap();
     }
 

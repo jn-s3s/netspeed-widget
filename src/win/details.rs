@@ -245,24 +245,28 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
         "Live: {}\r\n{}",
         state.snapshot.rates, state.snapshot.body
     ));
-    state.body = CreateWindowExW(
-        WINDOW_EX_STYLE::default(),
-        PCWSTR(edit.as_ptr()),
-        PCWSTR(text.as_ptr()),
-        WS_CHILD
-            | WS_VISIBLE
-            | WS_TABSTOP
-            | WS_VSCROLL
-            | WINDOW_STYLE(ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32),
-        (16.0 * s) as i32,
-        (176.0 * s) as i32,
-        (300.0 * s) as i32,
-        (210.0 * s) as i32,
-        hwnd,
-        HMENU(netspeed_widget::commands::DETAILS_BODY_ID as usize as *mut _),
-        None,
-        None,
-    )
+    // SAFETY: hwnd is the live panel parent; class and text are terminated
+    // buffers kept alive for this synchronous call. No creation data is passed.
+    state.body = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            PCWSTR(edit.as_ptr()),
+            PCWSTR(text.as_ptr()),
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_VSCROLL
+                | WINDOW_STYLE(ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32),
+            (16.0 * s) as i32,
+            (176.0 * s) as i32,
+            (300.0 * s) as i32,
+            (210.0 * s) as i32,
+            hwnd,
+            HMENU(netspeed_widget::commands::DETAILS_BODY_ID as usize as *mut _),
+            None,
+            None,
+        )
+    }
     .unwrap_or_default();
     if let Some(font) = &state.font {
         font.apply_to(state.body);
@@ -270,20 +274,24 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
     for (index, label) in ["&Run speedtest", "&Settings", "&Close"].iter().enumerate() {
         let class = to_wide("BUTTON");
         let label = to_wide(label);
-        if let Ok(button) = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            PCWSTR(class.as_ptr()),
-            PCWSTR(label.as_ptr()),
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            ((16.0 + index as f32 * 104.0) * s) as i32,
-            (402.0 * s) as i32,
-            (96.0 * s) as i32,
-            (28.0 * s) as i32,
-            hwnd,
-            HMENU((index + 1) as *mut _),
-            None,
-            None,
-        ) {
+        // SAFETY: hwnd is the live panel parent; both terminated strings live
+        // through creation, and the integer child ID is not an owned menu.
+        if let Ok(button) = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                PCWSTR(class.as_ptr()),
+                PCWSTR(label.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                ((16.0 + index as f32 * 104.0) * s) as i32,
+                (402.0 * s) as i32,
+                (96.0 * s) as i32,
+                (28.0 * s) as i32,
+                hwnd,
+                HMENU((index + 1) as *mut _),
+                None,
+                None,
+            )
+        } {
             if let Some(font) = &state.font {
                 font.apply_to(button);
             }
@@ -297,29 +305,42 @@ unsafe extern "system" fn panel_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let pointer = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut PanelState;
+    // SAFETY: Windows invokes this procedure for its panel window. User data is
+    // either null during creation or the Box<PanelState> installed by show().
+    let pointer = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut PanelState;
     if pointer.is_null() {
-        return DefWindowProcW(hwnd, message, wparam, lparam);
+        // SAFETY: Forward the unchanged Windows-supplied message tuple.
+        return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
     }
     match message {
         WM_PAINT => {
-            let state = &mut *pointer;
+            // SAFETY: The UI thread owns the installed Box until WM_NCDESTROY;
+            // this painting path does not re-enter the panel procedure.
+            let state = unsafe { &mut *pointer };
             let mut ps = PAINTSTRUCT::default();
-            let dc = BeginPaint(hwnd, &mut ps);
+            // SAFETY: WM_PAINT supplies hwnd; ps is writable and paired below.
+            let dc = unsafe { BeginPaint(hwnd, &mut ps) };
             let mut rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rect);
+            // SAFETY: rect is a writable output buffer for the live panel.
+            let _ = unsafe { GetClientRect(hwnd, &mut rect) };
             let mut canvas = Canvas::new(rect.right.max(1), rect.bottom.max(1));
-            let background = system_color(GetSysColor(COLOR_WINDOW));
+            // SAFETY: Both constants are valid system color indices.
+            let (background, foreground) = unsafe {
+                (
+                    system_color(GetSysColor(COLOR_WINDOW)),
+                    system_color(GetSysColor(COLOR_WINDOWTEXT)),
+                )
+            };
             let palette = crate::theme::native_panel_palette(
                 state.snapshot.palette,
                 background,
-                system_color(GetSysColor(COLOR_WINDOWTEXT)),
+                foreground,
                 crate::win::appearance::Appearance::current().high_contrast,
             );
             canvas.fill_rounded_rect(
                 Rect::new(0.0, 0.0, rect.right as f32, rect.bottom as f32),
                 0.0,
-                system_color(GetSysColor(COLOR_WINDOW)),
+                background,
             );
             let s = state.scale;
             if let Some(font) = &state.title_font {
@@ -350,7 +371,8 @@ unsafe extern "system" fn panel_proc(
                 );
             }
             blit_opaque(dc, &canvas);
-            let _ = EndPaint(hwnd, &ps);
+            // SAFETY: ps is the PAINTSTRUCT initialized by BeginPaint above.
+            let _ = unsafe { EndPaint(hwnd, &ps) };
             LRESULT(0)
         }
         WM_COMMAND => {
@@ -358,7 +380,9 @@ unsafe extern "system" fn panel_proc(
             if !(1..=3).contains(&id) || wparam.0 >> 16 != BN_CLICKED as usize {
                 return LRESULT(0);
             }
-            let state = &*pointer;
+            // SAFETY: The installed Box is live on the UI thread; the borrow
+            // ends before posting a command or changing window visibility.
+            let state = unsafe { &*pointer };
             let command = match id {
                 1 => Some(state.run_command),
                 2 => Some(state.settings_command),
@@ -366,34 +390,57 @@ unsafe extern "system" fn panel_proc(
             };
             let owner = state.owner;
             if let Some(command) = command {
-                let _ = PostMessageW(owner, WM_COMMAND, WPARAM(command as usize), LPARAM(0));
+                // SAFETY: The command contains only integer values, not borrowed
+                // pointers that could expire before the owner processes it.
+                if let Err(err) =
+                    unsafe { PostMessageW(owner, WM_COMMAND, WPARAM(command as usize), LPARAM(0)) }
+                {
+                    crate::logger::warning(
+                        "details",
+                        &format!("could not post panel command: {err}"),
+                    );
+                }
             }
             if id != 1 {
-                let _ = ShowWindow(hwnd, SW_HIDE);
+                // SAFETY: hwnd is this panel's window on its owning UI thread.
+                // The return value is previous visibility, not a failure status.
+                let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             }
             LRESULT(0)
         }
         WM_CLOSE => {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            // SAFETY: hwnd is this panel's window on its owning UI thread.
+            // The return value is previous visibility, not a failure status.
+            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             LRESULT(0)
         }
         // Reopening rebuilds controls at the new monitor's DPI.
         WM_DPICHANGED => {
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            // SAFETY: hwnd is this panel's window on its owning UI thread.
+            // The return value is previous visibility, not a failure status.
+            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             LRESULT(0)
         }
         WM_ACTIVATE if wparam.0 & 0xFFFF == WA_INACTIVE as usize => {
             DEACTIVATED.set(Some(Instant::now()));
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            // SAFETY: hwnd is this panel's window on its owning UI thread.
+            // The return value is previous visibility, not a failure status.
+            let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
             LRESULT(0)
         }
         WM_NCDESTROY => {
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            // SAFETY: Clear the pointer before releasing its Box so any
+            // subsequent messages take the null-user-data path.
+            unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             PANEL.set(HWND::default());
-            drop(Box::from_raw(pointer));
-            DefWindowProcW(hwnd, message, wparam, lparam)
+            // SAFETY: show() transferred this Box once; WM_NCDESTROY reclaims
+            // it exactly once after clearing all window access to the pointer.
+            unsafe { drop(Box::from_raw(pointer)) };
+            // SAFETY: Forward the unchanged Windows-supplied message tuple.
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
         }
-        _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        // SAFETY: Forward the unchanged Windows-supplied message tuple.
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }
 

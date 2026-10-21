@@ -1,92 +1,114 @@
 name: CI
 
 on:
-  push:
-    branches: [main, dev]
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main, dev]
-  workflow_dispatch:
+    push:
+        branches: [main, dev]
+    pull_request:
+        types: [opened, synchronize, reopened, ready_for_review]
+        branches: [main, dev]
+    workflow_dispatch:
 
 permissions:
-  contents: read
+    contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Lint, format and test
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+    verify:
+        name: Lint, format and test
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Rust quality checks
-        uses: ./.github/actions/rust-checks
+            - name: Rust quality checks
+              uses: ./.github/actions/rust-checks
 
-  changelog-gate:
-    name: Changelog gate
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
+    msrv:
+        name: Minimum supported Rust
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+            - name: Read declared MSRV
+              shell: pwsh
+              run: |
+                  rustup show active-toolchain
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  $msrv = ($metadata.packages | Where-Object name -eq 'netspeed-widget').rust_version
+                  if (-not $msrv) { throw 'Cargo.toml must declare rust-version.' }
+                  "RUST_MSRV=$msrv" >> $env:GITHUB_ENV
+                  rustup toolchain install $msrv --profile minimal
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            - name: Test with declared MSRV
+              shell: pwsh
+              run: cargo +${{ env.RUST_MSRV }} test --locked --workspace -- --show-output
 
-      - name: Provision configured Rust toolchain
-        shell: pwsh
-        run: |
-          rustup show active-toolchain
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    changelog-gate:
+        name: Changelog gate
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+              with:
+                  fetch-depth: 0
 
-      - name: Verify changelog has a fresh version
-        run: |
-          $content = Get-Content -Raw CHANGELOG.md
+            - name: Provision configured Rust toolchain
+              shell: pwsh
+              run: |
+                  rustup show active-toolchain
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $unreleased = [regex]::Match($content, '(?ms)^## \[Unreleased\]\r?\n(.*?)(?=^## \[)')
-          if (-not $unreleased.Success) {
-              throw "CHANGELOG.md has no ## [Unreleased] section."
-          }
-          if ($unreleased.Groups[1].Value.Trim()) {
-              throw "## [Unreleased] must be empty before merging to main; run the changelog update first."
-          }
+            - name: Verify changelog has a fresh version
+              run: |
+                  $content = Get-Content -Raw CHANGELOG.md
 
-          $versionMatch = [regex]::Match($content, '(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}')
-          if (-not $versionMatch.Success) {
-              throw "No dated version section found in CHANGELOG.md."
-          }
-          $version = $versionMatch.Groups[1].Value
+                  $unreleased = [regex]::Match($content, '(?ms)^## \[Unreleased\]\r?\n(.*?)(?=^## \[)')
+                  if (-not $unreleased.Success) {
+                      throw "CHANGELOG.md has no ## [Unreleased] section."
+                  }
+                  if ($unreleased.Groups[1].Value.Trim()) {
+                      throw "## [Unreleased] must be empty before merging to main; run the changelog update first."
+                  }
 
-          # Cargo.toml is the executable's version source.
-          $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) {
-              throw "Could not read package.version from Cargo.toml (cargo exited $LASTEXITCODE)."
-          }
-          $appVersion = ($metadata.packages | Where-Object name -eq 'netspeed-widget').version
-          if (-not $appVersion) { throw "NetSpeed package missing from cargo metadata." }
-          $appVersion = $appVersion.Trim()
-          if ($appVersion -ne $version) {
-              throw "CHANGELOG.md releases v$version but Cargo.toml is $appVersion; prepare a matching release before merging to main."
-          }
+                  $versionMatch = [regex]::Match($content, '(?m)^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}')
+                  if (-not $versionMatch.Success) {
+                      throw "No dated version section found in CHANGELOG.md."
+                  }
+                  $version = $versionMatch.Groups[1].Value
 
-          # Refresh tags first: the checkout's tag refs can be stale or missing.
-          git fetch --tags --force
-          if (git tag --list "v$version") {
-              throw "Tag v$version already exists; CHANGELOG.md has no new version to release."
-          }
+                  # Cargo.toml is the executable's version source.
+                  $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Could not read package.version from Cargo.toml (cargo exited $LASTEXITCODE)."
+                  }
+                  $appVersion = ($metadata.packages | Where-Object name -eq 'netspeed-widget').version
+                  if (-not $appVersion) { throw "NetSpeed package missing from cargo metadata." }
+                  $appVersion = $appVersion.Trim()
+                  if ($appVersion -ne $version) {
+                      throw "CHANGELOG.md releases v$version but Cargo.toml is $appVersion; prepare a matching release before merging to main."
+                  }
 
-          # [version] casts compare numerically; a string compare would misorder.
-          # The glob also matches suffix tags like v0.0.0-test, which cannot be
-          # cast, so keep only plain vX.Y.Z tags. release.yml skips pre-releases
-          # the same way when it picks the previous tag for the compare link.
-          $latestTag = git tag --list "v*.*.*" --sort=-v:refname |
-              Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
-              Select-Object -First 1
-          if ($latestTag -and ([version]$version -le [version]$latestTag.TrimStart('v'))) {
-              throw "Changelog version v$version is not newer than the latest tag $latestTag."
-          }
+                  # Refresh tags first: the checkout's tag refs can be stale or missing.
+                  git fetch --tags --force
+                  if (git tag --list "v$version") {
+                      throw "Tag v$version already exists; CHANGELOG.md has no new version to release."
+                  }
 
-          Write-Host "Changelog gate passed: v$version is ready to release."
+                  # [version] casts compare numerically; a string compare would misorder.
+                  # The glob also matches suffix tags like v0.0.0-test, which cannot be
+                  # cast, so keep only plain vX.Y.Z tags. release.yml skips pre-releases
+                  # the same way when it picks the previous tag for the compare link.
+                  $latestTag = git tag --list "v*.*.*" --sort=-v:refname |
+                      Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+                      Select-Object -First 1
+                  if ($latestTag -and ([version]$version -le [version]$latestTag.TrimStart('v'))) {
+                      throw "Changelog version v$version is not newer than the latest tag $latestTag."
+                  }
+
+                  Write-Host "Changelog gate passed: v$version is ready to release."

@@ -117,21 +117,14 @@ internet access is unavailable. Status uses a localized marker (`!` for warnings
 failures); download/upload accents do not change. Health colors are frozen during
 speedtests to avoid recording load-induced latency as an outage.
 
-Speedtests run manually or every four hours. The app tries optional fast-cli
-providers (a manually installed bundle beside the executable, or `fast.exe` /
-`fast-cli.exe` on PATH; npm `.cmd` shims are not supported), then a
-built-in HTTPS transfer test against `speed.cloudflare.com`. No external runtime
-is needed for that HTTP provider. The final passive observation is labelled
+Speedtests run manually or every four hours. The app uses a built-in HTTPS
+transfer test against `speed.cloudflare.com`, with no external runtime needed.
+The final passive observation is labelled
 as an estimate. The app does not save the estimate as a
 measurement and retries sooner.
 Active HTTP tests transfer up to 25 MB down and 8 MiB up; automatic tests consume
 data. Results are estimates of throughput to that service, not guaranteed line
 capacity.
-
-Standard release ZIPs do not include Node or fast-cli; HTTPS is their built-in
-measurement backend. The optional bundle layout is `third_party/node/node.exe`
-and `third_party/fast-bundle/node_modules/fast-cli/distribution/cli.js` beside the
-widget executable. Only install providers and PATH executables you trust.
 
 ## Build and verify
 

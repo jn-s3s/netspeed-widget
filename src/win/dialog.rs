@@ -182,36 +182,49 @@ unsafe extern "system" fn dialog_proc(
 ) -> LRESULT {
     match msg {
         windows::Win32::UI::WindowsAndMessaging::WM_DPICHANGED => {
-            let suggested = &*(lparam.0 as *const RECT);
-            let _ = SetWindowPos(
-                hwnd,
-                HWND_TOPMOST,
-                suggested.left,
-                suggested.top,
-                suggested.right - suggested.left,
-                suggested.bottom - suggested.top,
-                SWP_NOZORDER,
-            );
-            let _ = InvalidateRect(hwnd, None, false);
+            // SAFETY: WM_DPICHANGED supplies a RECT valid for this callback.
+            let suggested = unsafe { &*(lparam.0 as *const RECT) };
+            // SAFETY: hwnd is the dialog on its UI thread and suggested is the
+            // Windows-provided rectangle. No Rust state borrow spans the call.
+            let _ = unsafe {
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER,
+                )
+            };
+            // SAFETY: Invalidate the live dialog's entire client area.
+            let _ = unsafe { InvalidateRect(hwnd, None, false) };
             LRESULT(0)
         }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
+            // SAFETY: WM_PAINT supplies hwnd; ps is writable and paired below.
+            let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
             let mut rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rect);
-            let _ = FillRect(hdc, &rect, GetSysColorBrush(COLOR_WINDOW));
-            let _ = SetTextColor(
-                hdc,
-                windows::Win32::Foundation::COLORREF(GetSysColor(COLOR_WINDOWTEXT)),
-            );
-            let dpi = GetDpiForWindow(hwnd).max(96) as i32;
+            // SAFETY: hdc belongs to the active paint; rect is writable, and
+            // system color constants identify borrowed, non-owned resources.
+            unsafe {
+                let _ = GetClientRect(hwnd, &mut rect);
+                let _ = FillRect(hdc, &rect, GetSysColorBrush(COLOR_WINDOW));
+                let _ = SetTextColor(
+                    hdc,
+                    windows::Win32::Foundation::COLORREF(GetSysColor(COLOR_WINDOWTEXT)),
+                );
+            }
+            // SAFETY: hwnd is the live dialog supplied to this procedure.
+            let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96) as i32;
             let title_font = Font::new("Segoe UI", 15 * dpi / 96, WEIGHT_BOLD);
             let body_font = Font::new("Segoe UI", 13 * dpi / 96, WEIGHT_NORMAL);
 
             let mut y = 16 * dpi / 96;
             if let Some(font) = title_font.as_ref() {
-                draw_line(hdc, &rect, &mut y, "Press the new shortcut", font, dpi);
+                // SAFETY: The paint DC and font remain live through drawing.
+                unsafe { draw_line(hdc, &rect, &mut y, "Press the new shortcut", font, dpi) };
             }
             let captured = with_state(hwnd, |state| match state.captured.clone() {
                 Some(combo) => combo,
@@ -219,12 +232,15 @@ unsafe extern "system" fn dialog_proc(
             })
             .unwrap_or_default();
             if let Some(font) = body_font.as_ref() {
-                draw_line(hdc, &rect, &mut y, &captured, font, dpi);
+                // SAFETY: The paint DC and font remain live through drawing.
+                unsafe { draw_line(hdc, &rect, &mut y, &captured, font, dpi) };
                 if let Some(message) = with_state(hwnd, |state| state.message.clone()) {
-                    draw_line(hdc, &rect, &mut y, &message, font, dpi);
+                    // SAFETY: The same paint DC and font are still live.
+                    unsafe { draw_line(hdc, &rect, &mut y, &message, font, dpi) };
                 }
             }
-            let _ = EndPaint(hwnd, &ps);
+            // SAFETY: ps is the PAINTSTRUCT initialized by BeginPaint above.
+            let _ = unsafe { EndPaint(hwnd, &ps) };
             LRESULT(0)
         }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
@@ -239,7 +255,11 @@ unsafe extern "system" fn dialog_proc(
             with_state(hwnd, |state| {
                 state.result = None;
             });
-            let _ = DestroyWindow(hwnd);
+            // SAFETY: This procedure runs on the dialog's owning UI thread;
+            // with_state has released its borrow before destruction re-enters.
+            if let Err(err) = unsafe { DestroyWindow(hwnd) } {
+                crate::logger::warning("hotkey", &format!("could not close capture dialog: {err}"));
+            }
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -253,8 +273,11 @@ unsafe extern "system" fn dialog_proc(
 /// Draws one line of text inside the dialog.
 unsafe fn draw_line(hdc: HDC, rect: &RECT, y: &mut i32, text: &str, font: &Font, dpi: i32) {
     use windows::Win32::Graphics::Gdi::{DRAW_TEXT_FORMAT, DT_LEFT, DT_TOP, DT_WORDBREAK};
-    let old = SelectObject(hdc, HGDIOBJ(font.handle().0));
-    let _ = SetBkMode(hdc, TRANSPARENT);
+    // SAFETY: The caller provides a live paint DC and font; the previous font
+    // is restored below before the borrowed font can be dropped.
+    let old = unsafe { SelectObject(hdc, HGDIOBJ(font.handle().0)) };
+    // SAFETY: hdc is the same live paint DC.
+    let _ = unsafe { SetBkMode(hdc, TRANSPARENT) };
     let mut wide = to_wide(text);
     let text_len = wide.len() - 1;
     let mut line = RECT {
@@ -263,13 +286,17 @@ unsafe fn draw_line(hdc: HDC, rect: &RECT, y: &mut i32, text: &str, font: &Font,
         right: rect.right - 16 * dpi / 96,
         bottom: rect.bottom,
     };
-    let _ = DrawTextW(
-        hdc,
-        &mut wide[..text_len],
-        &mut line,
-        DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_TOP.0 | DT_WORDBREAK.0),
-    );
-    let _ = SelectObject(hdc, old);
+    // SAFETY: The text slice and output rectangle remain valid for drawing.
+    let _ = unsafe {
+        DrawTextW(
+            hdc,
+            &mut wide[..text_len],
+            &mut line,
+            DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_TOP.0 | DT_WORDBREAK.0),
+        )
+    };
+    // SAFETY: old is the previous object returned for this DC above.
+    let _ = unsafe { SelectObject(hdc, old) };
     *y += 30 * dpi / 96;
 }
 
