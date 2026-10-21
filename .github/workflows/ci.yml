@@ -46,7 +46,10 @@ jobs:
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             - name: Test with declared MSRV
               shell: pwsh
-              run: cargo +${{ env.RUST_MSRV }} test --locked --workspace -- --show-output
+              run: |
+                  if (-not $env:RUST_MSRV) { throw 'The declared MSRV was not exported by the setup step.' }
+                  cargo "+$env:RUST_MSRV" test --locked --workspace -- --show-output
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     changelog-gate:
         name: Changelog gate
