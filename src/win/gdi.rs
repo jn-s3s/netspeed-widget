@@ -289,7 +289,7 @@ pub fn blit_layered(hwnd: HWND, canvas: &Canvas) -> bool {
         if width <= 0 || height <= 0 {
             return false;
         }
-        let screen_dc = GetDC(hwnd);
+        let screen_dc = GetDC(HWND::default());
         let mem_dc = CreateCompatibleDC(screen_dc);
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -315,7 +315,7 @@ pub fn blit_layered(hwnd: HWND, canvas: &Canvas) -> bool {
             Ok(dib) => dib,
             Err(_) => {
                 let _ = DeleteDC(mem_dc);
-                let _ = ReleaseDC(hwnd, screen_dc);
+                let _ = ReleaseDC(HWND::default(), screen_dc);
                 return false;
             }
         };
@@ -350,7 +350,7 @@ pub fn blit_layered(hwnd: HWND, canvas: &Canvas) -> bool {
 
         let _ = DeleteDC(mem_dc);
         let _ = DeleteObject(HGDIOBJ(dib.0));
-        let _ = ReleaseDC(hwnd, screen_dc);
+        let _ = ReleaseDC(HWND::default(), screen_dc);
         result.is_ok()
     }
 }
