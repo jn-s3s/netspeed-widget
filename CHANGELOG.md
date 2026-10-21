@@ -6,6 +6,19 @@ Pushing a `v*` tag runs the release workflow, which builds the app and drafts a 
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-21
+
+### Added
+
+- Native Windows taskbar widget with adaptive placement, compact layouts, and a tray fallback when no safe space is available
+- Configurable themes, units, traffic graph, global hotkey, and Network details panel with session totals and speedtest results
+- Built-in HTTPS speedtests and Windows network counter sampling without an external runtime
+
+### Changed
+
+- Replaced the Python/Tkinter application with a standalone Rust/Win32 app that embeds in Explorer's taskbar
+- Updated development and release workflows for Rust, including Windows x64 executable and ZIP release packages
+
 ## [1.1.1] - 2026-10-03
 
 ### Fixed
@@ -72,7 +85,8 @@ Initial release of NetSpeed Widget, a small always-on-top Windows widget that sh
 - Logger for diagnostics and troubleshooting
 - Modular code structure with separated concerns
 
-[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jn-s3s/netspeed-widget/releases/tag/v1.0.0
