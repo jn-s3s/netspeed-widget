@@ -1,0 +1,19 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug NetSpeed Widget",
+            "type": "lldb",
+            "request": "launch",
+            "sourceLanguages": ["rust"],
+            "cargo": {
+                "args": ["build", "--locked", "--bin", "netspeed-widget"],
+                "filter": { "name": "netspeed-widget", "kind": "bin" }
+            },
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "APPDATA": "${workspaceFolder}\\target\\vscode-appdata"
+            }
+        }
+    ]
+}

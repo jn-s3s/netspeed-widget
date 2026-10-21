@@ -14,9 +14,9 @@
 
 - [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md).
 - [ ] My changes work on Windows (the only supported platform).
-- [ ] I have tested the widget manually (launch, drag, speedtest, tray menu, theme switch, multi-monitor).
+- [ ] I have tested the widget manually (launch, placement, details, speedtest, tray menu, hotkey, theme switch, multi-monitor).
 - [ ] I have added or updated tests where applicable.
-- [ ] `ruff check .`, `ruff format --check .`, `pyright`, `python -m pytest tests -q` and `python build.py` pass locally.
+- [ ] `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked` and `cargo build --release --locked` pass locally.
 - [ ] I have updated documentation / comments where the behaviour changed.
 
 ## Testing
@@ -25,4 +25,4 @@
 
 ## Screenshots
 
-<!-- If the change is visual, before/after screenshots help reviewers a lot. -->
+<!-- For visual changes, include before/after screenshots. -->
