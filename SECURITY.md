@@ -1,19 +1,16 @@
-# Security Policy
-
-Thank you for helping keep NetSpeed Widget and its users safe.
+# Security policy
 
 ## Supported versions
 
-Only the latest release receives security fixes. If you are running an older build, please update before reporting an issue.
+This policy covers NetSpeed Widget 2.x. Only the latest 2.x release receives security fixes. Use the latest available 2.x build when reporting an issue.
 
-| Version        | Supported |
-| -------------- | --------- |
-| Latest release | Yes       |
-| Older releases | No        |
+| Version    | Supported |
+| ---------- | --------- |
+| Latest 2.x | Yes       |
 
 ## How to report a vulnerability
 
-Please use GitHub's private vulnerability reporting:
+Use GitHub's private vulnerability reporting:
 
 1. Go to the [Security tab](https://github.com/jn-s3s/netspeed-widget/security) of this repository.
 2. Click **Report a vulnerability**.
@@ -23,13 +20,13 @@ If private reporting is unavailable for any reason, open a minimal public issue 
 
 ## What to include
 
-- The NetSpeed Widget version affected (the release exe filename includes it)
+- The NetSpeed Widget version affected (check the release asset filename or executable's Details properties)
 - Steps or a proof of concept showing how the issue manifests
-- Which component is involved if you know it (speedtest subprocess chain, bundled Node runtime, config or log file handling, global hotkey registration, tray icon)
+- Which component is involved if you know it (HTTPS speedtest, config or log file handling, global hotkey registration, taskbar integration, tray icon)
 
 ## What to expect
 
-You will receive an acknowledgment as soon as the report is triaged. Fixes are developed privately where possible and released together with a patched version. You will be credited in the release notes unless you prefer to stay anonymous.
+We will acknowledge your report as soon as we triage it. Where possible, we develop fixes privately and include them in a patched release. We will credit you in the release notes unless you prefer to stay anonymous.
 
 Please do not disclose the issue publicly until a fix has been released.
 
@@ -37,9 +34,7 @@ Please do not disclose the issue publicly until a fix has been released.
 
 NetSpeed Widget runs with your user privileges and stores no secrets: its only local state is a small config file and a log file under `%APPDATA%\NetSpeedWidget`. Reports are in scope when they show behavior beyond what the app legitimately does, such as:
 
-- Command injection or argument smuggling through the speedtest chain (bundled node.exe and fast-cli, fast on PATH or speedtest-cli)
 - Unsafe path handling when resolving bundled resources or the config and log files
-- Tampering with the bundled Node runtime or fast-cli bundle so the widget executes unexpected code
-- Unexpected outbound connections beyond the latency probes and speedtest traffic the app exists to make
+- Unexpected outbound connections beyond the app's latency probes and speedtest traffic
 
-The widget opens no listeners and exposes no IPC or network surface, so reports generally need a local vector.
+The widget opens no network listeners. It makes outbound HTTPS speedtest requests and TCP/ICMP latency probes, and integrates with Explorer through Windows APIs. Reports may involve local input or remote measurement responses.

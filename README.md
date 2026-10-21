@@ -1,187 +1,174 @@
 # NetSpeed Widget
 
-<p align="center">
-  <img src="icon.ico" width="96" alt="NetSpeed Widget icon">
-</p>
-
-A tiny always-on-top widget for Windows that shows your live network speed, ping and a rolling traffic graph. It sits in a corner of your screen, stays out of the way and gives you a one-click speedtest when you need it.
-
+A native Windows taskbar widget that shows live download/upload speed, latency,
+and a rolling traffic graph.
 
 [![CI](https://github.com/jn-s3s/netspeed-widget/actions/workflows/ci.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/ci.yml)
 [![Release](https://github.com/jn-s3s/netspeed-widget/actions/workflows/release.yml/badge.svg)](https://github.com/jn-s3s/netspeed-widget/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+![NetSpeed Widget showing live speeds and a traffic graph in the Windows taskbar](screenshots/taskbar-widget.svg)
 
-## What it shows
+## Run
 
-- Live download and upload speed, in Mb/s.
-- Latency to a nearby anycast endpoint, measured with a plain TCP connect (with an ICMP ping as a fallback when outbound TCP is blocked). The address is answered by the nearest server, so the number reflects your own connection rather than one CDN's routing. A colored dot tells you at a glance whether things look good, slow or offline. Slow readings warn; red is reserved for a probe that never reached its target.
-- A rolling graph of the last minute of traffic that rescales itself to the biggest spike, so busy and quiet moments both stay readable. Each segment is tinted by the latency health recorded at that moment (frozen during speedtests), so you can see when the link dropped rather than when it was merely slow.
-- Your last speedtest result on the widget itself (a smaller second row), plus the right-click menu and tray tooltip.
-- It follows your screens: if the display it was sitting on gets disconnected or disabled, it snaps back to the active screen instead of hiding off-screen.
-- How much data you have downloaded and uploaded since you started the app (right-click menu).
-- Peak speeds since startup, written to the log file.
+Download and run the Windows x64 `.exe` release directly; it is standalone and
+requires no installer or additional runtime. A ZIP containing the executable,
+README and license is also available for bundled distribution.
 
-## How to use it
-
-- **Drag** it anywhere you like. The position is remembered between runs.
-- **Double-click** to run a speedtest.
-- **Right-click** for a menu: run a speedtest, see session totals, change opacity, toggle auto-hide, reset the position, hide or quit.
-- **Right-click > Theme** picks one of the built-in color presets; your choice is persisted, so the widget starts with the same look next time.
-- **Hover** over it and it politely hides itself until you move the mouse away, if you turn on "Auto-hide on hover".
-- **Hotkey** Ctrl+Shift+Alt+N shows or hides the widget from anywhere, even when it has no focus. Pick your own combo with right-click > "Change hotkey..." (also in the tray menu). If the combo is already taken by another app or reserved by Windows, the widget says so and keeps the old one.
-- The tray icon offers quick actions (speedtest, show/hide, quit) plus a live speed readout in its tooltip.
-
-## Speedtest engine
-
-Speedtests are handled by a small chain, tried in order:
-
-1. A bundled Node.js runtime plus fast-cli (fast.com) packed next to the app.
-2. fast-cli or the `fast` command on your PATH, if you have it.
-3. The speedtest-cli Python library.
-4. As a last resort, an estimate from the traffic already crossing the wire.
-
-The first three measure your line. The fourth only watches what happens to be
-moving, so it is shown as an "estimate" instead of a speedtest result, it is
-not saved as your last result, and the app retries a real measurement sooner
-than the usual four hours. If an idle connection is all it can see, it reports
-nothing rather than a believable zero.
-
-An automatic speedtest runs every 4 hours so the number you see is never stale.
-
-## Performance
-
-- All UI work happens on the Tk main thread, polling background samplers every 250 ms.
-- Throughput is read from psutil counters, and latency comes from a lightweight TCP connect. No per-second subprocesses.
-- The heavy speedtest library loads lazily, only when a test actually runs, so startup stays instant.
-
-## Install and run
+For source builds, install stable Rust with the Windows MSVC toolchain and the
+Visual Studio C++ build tools, including the Windows SDK:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python app.py
+cargo run --locked
 ```
 
-`requirements.txt` is a fully pinned, hash-checked lock covering CPython 3.11
-and 3.12 on 64-bit Windows. On another interpreter or platform pip stops with
-a missing-hash error rather than installing something the file never approved;
-the regeneration command is documented at the top of that file.
+## Controls
 
-## Build the standalone app
+- Choose automatic placement from the context menu; dragging is not supported.
+- Hover for live traffic, probe details, session totals and the last speedtest.
+- Click to open or close Network details. The panel has a larger graph,
+  Run speedtest, Settings and Close buttons; Tab navigates controls
+  and Escape dismisses it. Clicking elsewhere dismisses the panel too.
+- Start a manual speedtest with Run speedtest in the Network details panel.
+- Right-click the widget or tray icon for themes, traffic graph,
+  layouts, units, placement, display selection,
+  hotkey and quit. Network details is also available from the tray menu
+  when the widget has no room to appear.
+- Ctrl+Shift+Alt+N toggles visibility. Change the shortcut from the menu.
+- Click the tray icon to show or hide the widget.
+
+Settings and the rolling log are stored in `%APPDATA%\NetSpeedWidget`.
+Show/Hide controls your visibility preference; automatic placement can
+temporarily hide the widget when no safe space is available. The Default theme,
+listed as Follow Windows (transparent), adapts its foreground to the taskbar's
+light/dark setting and has no background or border, including on hover. An optional
+Subtle background improves separation. Other themes keep their colored
+backgrounds. Windows high-contrast colors override all presets.
+
+## Display
+
+The live display uses neutral, semibold values with fixed digit cells and separate
+unit columns. Cyan down arrows and lavender up arrows keep their meaning even
+when a latency probe fails. Fonts, spacing and placement gaps scale with the
+selected taskbar's DPI.
+
+Choose a Layout from the context menu:
+
+| Layout             | Contents                                     | Width at 100% scaling        |
+| ------------------ | -------------------------------------------- | ---------------------------- |
+| Compact            | Stacked live download and upload             | 128 px                       |
+| Balanced (default) | Stacked speeds, optional graph, probe status | 224 px; 168 px without graph |
+| Single line        | Both speeds and probe status in one row      | 288 px                       |
+
+Taskbars shorter than 34 logical pixels use Single line to preserve readability.
+Auto-fit crowded taskbars, enabled by default, lets automatic placement switch
+Balanced to Compact before falling back to the tray. Density changes settle for
+two seconds; expansion also requires extra free-space margin. Numeric updates and
+hovering never change the widget's width.
+
+Under Units, choose decimal bits (Kbps/Mbps/Gbps) or bytes (kB/s/MB/s/GB/s).
+Prefixes adapt with hysteresis to avoid boundary flicker. Zero traffic is shown
+as `0`; a missing or stale sample is `—`. Very small
+nonzero readings use `<0.01` in the displayed unit.
+
+The graph shows a fixed 60-second time window with a shared automatic download/
+upload scale. It uses thin lines without a grid or border; Shade download area
+adds a 30%-opacity download-colored fill and is disabled in high contrast.
+At idle or very low download rates, there is little area to shade, so the
+difference can still be small. Per-pixel peaks preserve brief bursts,
+missing intervals leave gaps, and scale decay follows sample time, not repaints.
+Graph height shows relative activity, not connection-capacity utilization.
+
+Network details includes recent peaks, session totals, and the last measured
+speedtest's age and provider, when available. Passive estimates are shown
+separately from saved measurements. The native,
+read-only details text can be focused, scrolled and copied with the keyboard.
+
+## Taskbar integration
+
+The widget is a non-activating child window embedded in Explorer's taskbar. It follows the
+taskbar's visibility and stacking instead of repeatedly raising a floating
+topmost window. It does not reserve taskbar space or change the taskbar's styles.
+Only the widget's rectangle receives its clicks.
+
+For placement, choose Prefer left side or Next to the notification area.
+Both check exposed taskbar controls about once per second, including changes
+from opening apps or switching icon alignment. The widget stays put while it
+fits, waits for layout changes to settle before moving to another gap, and
+temporarily hides when no gap fits or the layout cannot be read. The tray icon
+remains available, and the widget returns automatically when space is available again.
+
+Detection uses Windows accessibility information and visible taskbar child
+windows; third-party tools may not expose their occupied area reliably.
+Placement is automatic; use the context menu to choose a side and display.
+
+The widget fills the taskbar height and uses square corners. Context menus open
+at the cursor using native positioning and stay in front of the widget.
+
+Position follows the selected taskbar, with fallback to the primary display.
+Discovery retries after Explorer restarts. The tray icon is re-added if the
+shell loses it. If no taskbar is available, the widget waits for one rather than
+appearing as a floating window. Horizontal taskbars are the supported layout;
+vertical taskbars and separate fullscreen-suppression logic are not supported.
+
+## Network measurements
+
+Windows IP Helper counters are sampled on a background thread once a second.
+Latency uses a TCP connection to `1.1.1.1:443` every two seconds, with a single
+ICMP ping fallback. Green means healthy, amber means slow or TCP-blocked, and
+red means neither probe reached its target. A red status does not prove that all
+internet access is unavailable. Status uses a localized marker (`!` for warnings and `×` for
+failures); download/upload accents do not change. Health colors are frozen during
+speedtests to avoid recording load-induced latency as an outage.
+
+Speedtests run manually or every four hours. The app uses a built-in HTTPS
+transfer test against `speed.cloudflare.com`, with no external runtime needed.
+The final passive observation is labelled
+as an estimate. The app does not save the estimate as a
+measurement and retries sooner.
+Active HTTP tests transfer up to 25 MB down and 8 MiB up; automatic tests consume
+data. Results are estimates of throughput to that service, not guaranteed line
+capacity.
+
+## Build and verify
 
 ```powershell
-.venv\Scripts\python build.py
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked
 ```
 
-The build machine needs Node.js and npm. `build.py` vendors a real `node.exe`
-and installs fast-cli with `npm ci`, which resolves nothing new: it installs
-exactly the tree recorded in the committed `third_party/fast-bundle/package-lock.json`.
-Bumping fast-cli means changing `FAST_CLI_VERSION`, regenerating that lockfile
-and reviewing which transitive packages moved, all in one commit.
+The standalone executable is `target\release\netspeed-widget.exe`, with its icon
+and version embedded. Release builds do not open a console window.
 
-An untagged local build writes `dist/NetSpeedWidget/`. Release builds set the
-`APP_VERSION` environment variable (CI passes the git tag), so the directory is
-versioned instead: `dist/NetSpeedWidget-<version>/`. It contains the executable,
-its `_internal` directory and the bundled Node runtime and fast-cli resources.
+The Windows lifecycle test launches the real application with isolated settings,
+checks taskbar parenting and child-window styles, verifies that mouse movement
+does not capture or reposition the widget, and checks menus, visibility controls,
+settings handling, recovery and clean shutdown.
+Quit any running copy before testing. The lifecycle test reports a skip when
+the current Windows session has no Explorer taskbar.
 
-The release workflow packages that directory as a
-`NetSpeedWidget-<version>-windows-x64.zip` file with a versioned top-level
-folder. Extract the whole ZIP before running the application. The executable
-must stay beside its `_internal` directory, which contains the bundled
-resources; do not move or rename the executable by itself.
+## Source layout
 
-A tagged build whose tag differs from `utils/version.APP_VERSION` is refused,
-because that constant is what the window title, the tray tooltip and the log
-report.
+- `src/app.rs`: Win32 controller, widget, interactions and timers.
+- `src/win/`: taskbar discovery and attachment, tray, menu, dialog and GDI helpers.
+- `src/win/details.rs`, `src/win/tooltip.rs`, `src/win/appearance.rs`: native
+  details panel, hover information and Windows appearance detection.
+- `src/canvas.rs`, `src/paint.rs`, `src/graph.rs`, `src/theme.rs`: rendering.
+- `src/sampler.rs`, `src/latency.rs`, `src/speedtest.rs`: background measurements.
+- `src/config.rs`, `src/paths.rs`, `src/logger.rs`: persistent state and logging.
+- `src/format.rs`, `src/hotkey.rs`, `src/schedule.rs`, `src/clock.rs`: formatting,
+  shortcut parsing, scheduling and shared time helpers.
+- `src/lib.rs`, `src/commands.rs`: shared native command identifiers for tests.
+- `tests/windows_lifecycle.rs`: real-window regression test.
+- `Cargo.toml`, `Cargo.lock`, `build.rs`: dependencies, version and resources.
 
-## Development
+CI and release builds run the same Rust checks on Windows. Release tags must
+match `Cargo.toml` and the newest dated changelog entry. The release workflow
+attaches both a standalone x64 executable and a ZIP containing the executable,
+README and license to a draft; publication remains a maintainer action.
 
-Linting and formatting use [Ruff](https://docs.astral.sh/ruff/), configured in `ruff.toml`. Type checking uses [Pyright](https://microsoft.github.io/pyright/), configured in `pyrightconfig.json`. Install the dev tools once:
-
-```powershell
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\pip install -r requirements-dev.txt
-```
-
-Run all checks (same commands CI runs):
-
-```powershell
-.\lint.ps1
-```
-
-Or call the tools directly:
-
-```powershell
-.venv\Scripts\ruff check .          # lint
-.venv\Scripts\ruff check --fix .    # lint and apply safe fixes
-.venv\Scripts\ruff format .         # format in place
-.venv\Scripts\ruff format --check . # verify formatting only
-.venv\Scripts\pyright               # type check
-```
-
-`ruff check .`, `ruff format --check .`, and `pyright` must all exit clean before a commit. CI runs them in `.github/workflows/ci.yml` and again before every release build.
-
-The test suite under `tests/` uses pytest. An autouse fixture repoints
-`APPDATA` at a temp directory, so no run ever touches your real
-`%APPDATA%\NetSpeedWidget` settings or log. It covers hotkey parsing,
-formatting and the register-before-release swap, the speedtest provider order,
-JSON parsing and the passive estimate's idle and counter-reset limits, sampler
-rate math and thread lifecycle (including counter-reset and zero-elapsed edge
-cases), monitor visibility and the off-screen rescue, speedtest scheduling,
-graph scaling and per-segment health coloring, config load, save, locking and
-validation, log levels and rollover, path resolution, tray menu routing and
-the widget's drag, hover, opacity, theme switching, tick and shutdown behavior
-against a recorded fake window. Run it locally:
-
-```powershell
-.venv\Scripts\python -m pytest tests -q
-```
-
-CI runs the same command on every push and pull request, and again before every release build.
-
-## Project layout
-
-- `app.py` - the widget itself: window, text rows, menus, interaction and the tick loop.
-- `utils/sampler.py` - reads network counters once a second and keeps history.
-- `utils/latency.py` - probes latency in the background against an anycast address.
-- `utils/hotkeys.py` - registers the global show/hide hotkey and listens for it.
-- `utils/hotkey_dialog.py` - the capture window used to rebind that hotkey.
-- `utils/speedtest.py` - the speedtest provider chain.
-- `utils/schedule.py` - decides when the next automatic speedtest is due.
-- `utils/graph.py` - the rolling traffic plot and its peak scaling.
-- `utils/monitors.py` - display geometry, so the widget can tell when it is stranded.
-- `utils/theme.py` - the palette, theme registry, status health color mapping and the rounded pill shape.
-- `utils/config.py` - small persistent settings in `%APPDATA%\NetSpeedWidget\config.json`.
-- `utils/paths.py` - resolves resource and state paths for source runs and PyInstaller builds.
-- `utils/logger.py` - levelled, subsystem-tagged logging with size-based rollover.
-- `utils/version.py` - the one place the app version is written.
-- `utils/menu_labels.py` - shared text formats for the widget and tray menus.
-- `utils/format.py` - shared number formatting.
-- `tray/container.py` - the system tray icon and menu.
-- `build.py` and `clean.py` - packaging helpers.
-- `lint.ps1` - runs the Ruff lint and format checks.
-- `tests/` - pytest unit tests; see Development above.
-- `conftest.py` - puts the repo root on the import path and provides the isolated, fake-window fixtures.
-
-## Tech stack
-
-- Python 3.11, with Tkinter (the standard library GUI toolkit) for the widget UI.
-- pystray and Pillow for the tray icon, pywin32 for the global hotkey and Win32 integration.
-- psutil for network counters, speedtest-cli as one of the speedtest providers.
-- A bundled Node.js runtime with fast-cli as the primary speedtest provider.
-- PyInstaller packages the app folder, Ruff lints and formats, GitHub Actions runs CI and releases.
-
----
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions and conventions, and make sure `.\lint.ps1` (or `ruff check .` and `ruff format --check .`) passes before opening a pull request.
-
-## Security
-
-Found a vulnerability? Please do not open a public issue. See [SECURITY.md](SECURITY.md) for how to report it privately.
-
-## License
-
-Released under the [MIT License](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and release conventions,
+[SECURITY.md](SECURITY.md) for private vulnerability reporting, and
+[LICENSE](LICENSE) for the MIT license.

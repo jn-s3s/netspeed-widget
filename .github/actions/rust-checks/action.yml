@@ -1,0 +1,28 @@
+name: Rust checks
+description: Provision the configured Rust toolchain and run the shared Windows quality checks
+runs:
+    using: composite
+    steps:
+        - name: Setup Rust
+          shell: pwsh
+          run: |
+              # rustup provisions the toolchain and components from rust-toolchain.toml.
+              rustup show active-toolchain
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        - name: Cache Rust dependencies
+          uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        - name: Format check
+          shell: pwsh
+          run: cargo fmt --all -- --check
+        - name: Clippy
+          shell: pwsh
+          run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        - name: Tests
+          shell: pwsh
+          # Include output from passing tests so desktop-suite skip warnings surface.
+          run: cargo test --locked --workspace -- --show-output
+        - name: Documentation
+          shell: pwsh
+          env:
+              RUSTDOCFLAGS: -D warnings
+          run: cargo doc --locked --workspace --no-deps

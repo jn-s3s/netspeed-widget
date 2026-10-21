@@ -1,0 +1,70 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Rust: Format",
+            "type": "process",
+            "command": "cargo",
+            "args": ["fmt", "--all"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Rust: Check formatting",
+            "type": "process",
+            "command": "cargo",
+            "args": ["fmt", "--all", "--", "--check"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Rust: Clippy",
+            "type": "process",
+            "command": "cargo",
+            "args": ["clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"],
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Rust: Test",
+            "type": "process",
+            "command": "cargo",
+            "args": ["test", "--locked", "--workspace", "--", "--show-output"],
+            "group": "test",
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Rust: Documentation",
+            "type": "process",
+            "command": "cargo",
+            "args": ["doc", "--locked", "--workspace", "--no-deps"],
+            "options": {
+                "env": { "RUSTDOCFLAGS": "-D warnings" }
+            },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Rust: Build",
+            "type": "process",
+            "command": "cargo",
+            "args": ["build", "--locked", "--bin", "netspeed-widget"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Rust: Release build",
+            "type": "process",
+            "command": "cargo",
+            "args": ["build", "--release", "--locked"],
+            "problemMatcher": ["$rustc"]
+        },
+        {
+            "label": "Rust: Check conventions",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Rust: Check formatting",
+                "Rust: Clippy",
+                "Rust: Test",
+                "Rust: Documentation"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}
