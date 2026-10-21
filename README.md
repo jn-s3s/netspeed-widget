@@ -8,8 +8,9 @@ and a rolling traffic graph.
 
 ## Run
 
-Download and extract a Windows x64 release, then run `netspeed-widget.exe`.
-The executable is standalone and requires no installer or additional runtime.
+Download and run the Windows x64 `.exe` release directly; it is standalone and
+requires no installer or additional runtime. A ZIP containing the executable,
+README and license is also available for bundled distribution.
 
 For source builds, install stable Rust with the Windows MSVC toolchain and the
 Visual Studio C++ build tools, including the Windows SDK:
@@ -162,8 +163,8 @@ the current Windows session has no Explorer taskbar.
 
 CI and release builds run the same Rust checks on Windows. Release tags must
 match `Cargo.toml` and the newest dated changelog entry. The release workflow
-packages a standalone x64 executable and creates a draft; publication remains
-a maintainer action.
+attaches both a standalone x64 executable and a ZIP containing the executable,
+README and license to a draft; publication remains a maintainer action.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and release conventions,
 [SECURITY.md](SECURITY.md) for private vulnerability reporting, and

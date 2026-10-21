@@ -20,7 +20,7 @@ If private reporting is unavailable for any reason, open a minimal public issue 
 
 ## What to include
 
-- The NetSpeed Widget version affected (check the release ZIP filename or executable's Details properties)
+- The NetSpeed Widget version affected (check the release asset filename or executable's Details properties)
 - Steps or a proof of concept showing how the issue manifests
 - Which component is involved if you know it (HTTPS speedtest, config or log file handling, global hotkey registration, taskbar integration, tray icon)
 

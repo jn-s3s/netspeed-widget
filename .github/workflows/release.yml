@@ -104,15 +104,19 @@ jobs:
                   $packageName = "NetSpeedWidget-$env:RELEASE_TAG"
                   $package = Join-Path "dist" $packageName
                   New-Item -ItemType Directory -Path $package -Force | Out-Null
-                  Copy-Item "target/x86_64-pc-windows-msvc/release/netspeed-widget.exe" $package
+                  $exe = "target/x86_64-pc-windows-msvc/release/netspeed-widget.exe"
+                  $exeName = "$packageName-windows-x64.exe"
+                  Copy-Item $exe (Join-Path "dist" $exeName)
+                  Copy-Item $exe $package
                   Copy-Item "LICENSE", "README.md" $package
                   $archiveName = "$packageName-windows-x64.zip"
                   $archive = Join-Path "dist" $archiveName
                   # Compress-Archive stays: slower, but its output is the checked one.
                   Compress-Archive -LiteralPath $package -DestinationPath $archive -Force
 
-                  # Only the file name crosses over; the upload owns the dist/ prefix.
+                  # Only file names cross over; the upload owns the dist/ prefix.
                   Add-Content -Path $env:GITHUB_OUTPUT -Value "archive_name=$archiveName"
+                  Add-Content -Path $env:GITHUB_OUTPUT -Value "exe_name=$exeName"
               env:
                   RELEASE_TAG: ${{ github.ref_name }}
 
@@ -122,7 +126,9 @@ jobs:
                   tag_name: ${{ github.ref_name }}
                   name: NetSpeed Widget ${{ github.ref_name }}
                   body_path: ${{ steps.notes.outputs.body_path }}
-                  files: dist/${{ steps.archive.outputs.archive_name }}
+                  files: |
+                    dist/${{ steps.archive.outputs.exe_name }}
+                    dist/${{ steps.archive.outputs.archive_name }}
                   # Draft first: a maintainer publishes the release by hand.
                   draft: true
                   fail_on_unmatched_files: true

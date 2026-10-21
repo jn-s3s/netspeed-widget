@@ -40,7 +40,7 @@ body:
       id: version
       attributes:
           label: Widget version
-          description: Which version are you running? Check the release ZIP filename or the executable's Details properties. For source builds, include the commit hash.
+          description: Which version are you running? Check the release asset filename or the executable's Details properties. For source builds, include the commit hash.
           placeholder: "e.g. v2.0.0"
       validations:
           required: true

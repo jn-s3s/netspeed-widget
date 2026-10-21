@@ -101,7 +101,8 @@ release version; no application update or compatibility decision uses it.
 Merging to `main` runs the tag workflow. The `RELEASE_PAT` secret is
 the dedicated identity for pushing protected `v*` tags. A tag triggers the release
 workflow, which validates the version, runs Rust checks, builds an x64 executable,
-and opens a draft release with changelog notes. A maintainer publishes it manually.
+and opens a draft release with changelog notes, a standalone `.exe`, and a ZIP
+containing the executable, README and license. A maintainer publishes it manually.
 No registry publication is configured.
 
 Report bugs in GitHub issues. Report vulnerabilities privately as described in
