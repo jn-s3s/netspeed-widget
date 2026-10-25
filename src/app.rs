@@ -50,6 +50,7 @@ use crate::win::dialog;
 use crate::win::gdi::{blit_layered, to_wide};
 use crate::win::menu::{self, MenuEntry};
 use crate::win::placement::{choose_x, DensitySettler, OccupancyProbe, PlacementSettler};
+use crate::win::startup;
 use crate::win::taskbar::{self, TaskbarWindow};
 use crate::win::tray::{TrayIcon, TRAY_CALLBACK};
 use crate::win::{appearance::Appearance, details, tooltip::Tooltip};
@@ -1685,6 +1686,19 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         label: "Show widget".to_string(),
         checked: state.widget_visible,
     });
+    entries.push(match startup::enabled() {
+        Ok(checked) => MenuEntry::Check {
+            id: CMD_TOGGLE_AUTOSTART,
+            label: "Start with Windows".to_string(),
+            checked,
+        },
+        Err(err) => {
+            logger::error("startup", &err);
+            MenuEntry::Disabled {
+                label: "Start with Windows (registry unavailable)".to_string(),
+            }
+        }
+    });
     entries.push(MenuEntry::Command {
         id: CMD_QUIT,
         label: "Quit".to_string(),
@@ -1896,6 +1910,7 @@ fn handle_command(id: u32) {
         }
         CMD_CHANGE_HOTKEY => change_hotkey(),
         CMD_TOGGLE_VISIBILITY => toggle_visibility(),
+        CMD_TOGGLE_AUTOSTART => toggle_autostart(),
         CMD_QUIT => {
             shutdown();
             unsafe {
@@ -1903,6 +1918,30 @@ fn handle_command(id: u32) {
             }
         }
         _ => {}
+    }
+}
+
+fn toggle_autostart() {
+    let result = startup::enabled().and_then(|enabled| {
+        startup::set_enabled(!enabled)?;
+        logger::info("startup", &format!("start with Windows: {}", !enabled));
+        Ok(())
+    });
+    if let Err(err) = result {
+        logger::error("startup", &err);
+        let text = to_wide(&format!("Could not change Start with Windows.\n\n{err}"));
+        let title = to_wide("NetSpeed Widget");
+        // SAFETY: The owner is the UI-thread controller; both terminated strings
+        // remain live throughout the synchronous call. STATE is not locked.
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            MessageBoxW(
+                state_controller(),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
     }
 }
 

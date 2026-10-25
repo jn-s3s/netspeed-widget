@@ -18,6 +18,8 @@ pub const CMD_QUIT: u32 = 1009;
 pub const CMD_DETAILS: u32 = 1012;
 /// Opens the settings menu.
 pub const CMD_SETTINGS: u32 = 1013;
+/// Toggles per-user Windows sign-in startup for the current executable.
+pub const CMD_TOGGLE_AUTOSTART: u32 = 1014;
 /// Selects the compact taskbar layout.
 pub const CMD_LAYOUT_COMPACT: u32 = 1100;
 /// Selects the balanced taskbar layout.

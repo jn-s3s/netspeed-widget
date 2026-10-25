@@ -32,7 +32,7 @@ cargo run --locked
 - Start a manual speedtest with Run speedtest in the Network details panel.
 - Right-click the widget or tray icon for themes, traffic graph,
   layouts, units, placement, display selection,
-  hotkey and quit. Network details is also available from the tray menu
+  hotkey, Start with Windows and quit. Network details is also available from the tray menu
   when the widget has no room to appear.
 - Ctrl+Shift+Alt+N toggles visibility. Change the shortcut from the menu.
 - Click the tray icon to show or hide the widget.
@@ -44,6 +44,29 @@ listed as Follow Windows (transparent), adapts its foreground to the taskbar's
 light/dark setting and has no background or border, including on hover. An optional
 Subtle background improves separation. Other themes keep their colored
 backgrounds. Windows high-contrast colors override all presets.
+
+## Start with Windows
+
+Enable **Start with Windows** in the widget or tray context menu to launch at
+sign-in for your Windows account. It is off by default and needs no administrator
+access, service or scheduled task. Startup uses normal launch behavior, including
+your saved Show widget preference (hide it to start tray-only).
+
+The app writes the quoted current executable path as `NetSpeedWidget` under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Disabling the option
+removes only that Run value. The checkmark is read from the registry whenever
+the menu opens, including Windows Startup Apps / Task Manager approval state.
+If Windows disables the entry, enabling it here clears that disabled state.
+
+- After moving or renaming the executable, enable the option again from its new
+  location. The old registration appears unchecked and is replaced when enabled.
+- All copies share one per-user startup entry; enabling another copy replaces
+  the previous path. For portable or removable-drive usage, leave it disabled
+  unless that path will be available at sign-in. Quit other copies before launching.
+- If registry permissions or policy block an update, the app displays an error
+  and records it in the rolling log. Failed approval updates restore the prior
+  Run value; any failure to restore it is also reported. Organization policy can
+  still prevent startup independently of this registration.
 
 ## Display
 
