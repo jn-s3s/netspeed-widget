@@ -49,7 +49,10 @@ use crate::theme::{self, Health, Palette};
 use crate::win::dialog;
 use crate::win::gdi::{blit_layered, to_wide};
 use crate::win::menu::{self, MenuEntry};
-use crate::win::placement::{choose_x, DensitySettler, OccupancyProbe, PlacementSettler};
+use crate::win::placement::{
+    choose_x, DensitySettler, OccupancyProbe, PlacementSettler, LAYOUT_REFRESH_MS,
+    WM_TASKBAR_LAYOUT_CHANGED, WM_TASKBAR_LAYOUT_READY,
+};
 use crate::win::startup;
 use crate::win::taskbar::{self, TaskbarWindow};
 use crate::win::tray::{TrayIcon, TRAY_CALLBACK};
@@ -62,6 +65,8 @@ const WM_APP_SPEEDTEST: u32 = WM_APP + 1;
 const TIMER_TICK: usize = 1;
 /// Slow timer for taskbar recovery and scheduled speedtests.
 const TIMER_BACKGROUND: usize = 2;
+/// One-shot retry for a rate-limited event-driven layout scan.
+const TIMER_LAYOUT_RETRY: usize = 3;
 
 /// How often the widget refreshes, in milliseconds.
 const UI_TICK_MS: u32 = 250;
@@ -275,7 +280,7 @@ pub fn run() -> Result<(), String> {
         widget_visible,
         placement_available: false,
         widget_shown: false,
-        occupancy: OccupancyProbe::new(),
+        occupancy: OccupancyProbe::new(controller),
         placement_settler: PlacementSettler::default(),
         show_graph,
         hotkey_combo,
@@ -569,7 +574,17 @@ fn position_widget(state: &mut AppState) {
         let width = paint::widget_width(layout, state.show_graph, dpi) + margin;
         occupied
             .as_ref()
-            .and_then(|areas| choose_x(rect, areas, width, tray_left - width, None, gap))
+            .and_then(|areas| {
+                choose_x(
+                    rect,
+                    areas,
+                    width,
+                    tray_left - width - gap,
+                    None,
+                    gap,
+                    state.placement,
+                )
+            })
             .is_some()
     };
     let mut candidate = desired;
@@ -611,7 +626,7 @@ fn position_widget(state: &mut AppState) {
     }
     let preferred = match state.placement {
         Placement::Left => rect.left,
-        Placement::Tray => (tray_left - width).max(rect.left),
+        Placement::Tray => (tray_left - width - gap).max(rect.left),
     };
     let x = occupied.as_ref().and_then(|occupied| {
         choose_x(
@@ -621,6 +636,7 @@ fn position_widget(state: &mut AppState) {
             preferred,
             state.placed_for.map(|r| r.left),
             gap,
+            state.placement,
         )
     });
     let target = x.map(|x| RECT {
@@ -897,6 +913,25 @@ unsafe extern "system" fn controller_proc(
 
 unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_TASKBAR_LAYOUT_CHANGED | WM_TASKBAR_LAYOUT_READY => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                if msg == WM_TASKBAR_LAYOUT_CHANGED {
+                    state.occupancy.invalidate();
+                }
+                position_widget(state);
+                render(state);
+                // SAFETY: The timer belongs to this controller and only posts
+                // WM_TIMER. The regular UI timer remains a fallback on failure.
+                if unsafe { SetTimer(hwnd, TIMER_LAYOUT_RETRY, LAYOUT_REFRESH_MS, None) } == 0 {
+                    logger::warning(
+                        "placement",
+                        "could not schedule layout retry; using UI timer",
+                    );
+                }
+            }
+            LRESULT(0)
+        }
         WM_TIMER => {
             tick(wparam.0);
             LRESULT(0)
@@ -1117,6 +1152,25 @@ fn set_hovering(hovering: bool) {
 /// The UI refresh.
 fn tick(timer: usize) {
     match timer {
+        TIMER_LAYOUT_RETRY => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                // SAFETY: Stop this controller's retry timer after one tick.
+                if unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                        state.controller,
+                        TIMER_LAYOUT_RETRY,
+                    )
+                }
+                .is_err()
+                {
+                    logger::warning("placement", "could not stop layout retry timer");
+                }
+                position_widget(state);
+                render(state);
+            }
+            return;
+        }
         TIMER_TICK => {}
         TIMER_BACKGROUND => {
             let preferred = preferred_taskbar();
@@ -2031,6 +2085,10 @@ fn shutdown() {
         let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(state.controller, TIMER_TICK);
         let _ =
             windows::Win32::UI::WindowsAndMessaging::KillTimer(state.controller, TIMER_BACKGROUND);
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+            state.controller,
+            TIMER_LAYOUT_RETRY,
+        );
     }
     if let Some(tray) = state.tray.as_mut() {
         tray.remove();
