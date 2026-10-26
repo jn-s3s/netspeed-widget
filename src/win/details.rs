@@ -7,6 +7,7 @@ use crate::sampler::NetSample;
 use crate::theme::Palette;
 use crate::win::appearance::system_color;
 use crate::win::gdi::{blit_opaque, to_wide, Font};
+use crate::win::text::LabelFont;
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
@@ -37,11 +38,68 @@ struct PanelState {
     graph: TrafficGraph,
     body: HWND,
     owner: HWND,
-    font: Option<Font>,
-    title_font: Option<Font>,
+    font: Option<LabelFont>,
+    title_font: Option<LabelFont>,
+    control_font: Option<Font>,
     scale: f32,
     run_command: u32,
     settings_command: u32,
+}
+
+/// Physical-pixel regions, derived from font metrics and the actual client area.
+struct PanelLayout {
+    heading_y: f32,
+    traffic_y: f32,
+    graph: Rect,
+    scale_y: f32,
+    body: Rect,
+    buttons_y: f32,
+    width: f32,
+}
+
+impl PanelState {
+    fn layout(&self, width: i32, height: i32) -> PanelLayout {
+        let s = self.scale;
+        let margin = 16.0 * s;
+        let gap = 8.0 * s;
+        let heading_height = self
+            .title_font
+            .as_ref()
+            .map_or(20.0 * s, LabelFont::line_height);
+        let label_height = self.font.as_ref().map_or(17.0 * s, LabelFont::line_height);
+        // Align the heading's baseline rather than inferring ascent from height.
+        let heading_baseline = 28.0 * s;
+        let heading_y = (heading_baseline
+            - self
+                .title_font
+                .as_ref()
+                .map_or(16.0 * s, LabelFont::baseline))
+        .round();
+        let traffic_y = (heading_y + heading_height + gap).ceil();
+        let graph = Rect::new(
+            margin,
+            (traffic_y + label_height + gap).ceil(),
+            (width as f32 - 2.0 * margin).max(1.0),
+            66.0 * s,
+        );
+        let scale_y = (graph.bottom() + gap).ceil();
+        let body_y = (scale_y + label_height + 12.0 * s).ceil();
+        let buttons_y = height as f32 - margin - 28.0 * s;
+        PanelLayout {
+            heading_y,
+            traffic_y,
+            graph,
+            scale_y,
+            body: Rect::new(
+                margin,
+                body_y,
+                graph.width,
+                (buttons_y - margin - body_y).max(1.0),
+            ),
+            buttons_y,
+            width: graph.width,
+        }
+    }
 }
 
 pub fn translate(message: &MSG) -> bool {
@@ -171,8 +229,9 @@ pub fn toggle(
         graph: TrafficGraph::new(),
         body: HWND::default(),
         owner,
-        font: Font::new("Segoe UI", (12.0 * scale).round() as i32, 400),
-        title_font: Font::new("Segoe UI", (14.0 * scale).round() as i32, 600),
+        font: LabelFont::new("Segoe UI", 13.0 * scale, 400),
+        title_font: LabelFont::new("Segoe UI", 16.0 * scale, 600),
+        control_font: Font::native("Segoe UI", (13.0 * scale).round() as i32, 400),
         scale,
         run_command,
         settings_command,
@@ -209,7 +268,7 @@ pub fn toggle(
         .clamp(area.top, (area.bottom - height).max(area.top));
         // Install state after creation; the procedure does not need it during creation.
         match CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             PCWSTR(class.as_ptr()),
             PCWSTR(title.as_ptr()),
             WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
@@ -240,6 +299,10 @@ pub fn toggle(
 
 unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
     let s = state.scale;
+    let mut client = RECT::default();
+    // SAFETY: The live parent owns this writable client rectangle.
+    let _ = unsafe { GetClientRect(hwnd, &mut client) };
+    let layout = state.layout(client.right, client.bottom);
     let edit = to_wide("EDIT");
     let text = to_wide(&format!(
         "Live: {}\r\n{}",
@@ -257,10 +320,10 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
                 | WS_TABSTOP
                 | WS_VSCROLL
                 | WINDOW_STYLE(ES_MULTILINE as u32 | ES_READONLY as u32 | ES_AUTOVSCROLL as u32),
-            (16.0 * s) as i32,
-            (176.0 * s) as i32,
-            (300.0 * s) as i32,
-            (210.0 * s) as i32,
+            layout.body.x.round() as i32,
+            layout.body.y.round() as i32,
+            layout.body.width.round() as i32,
+            layout.body.height.round() as i32,
             hwnd,
             HMENU(netspeed_widget::commands::DETAILS_BODY_ID as usize as *mut _),
             None,
@@ -268,7 +331,7 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
         )
     }
     .unwrap_or_default();
-    if let Some(font) = &state.font {
+    if let Some(font) = &state.control_font {
         font.apply_to(state.body);
     }
     for (index, label) in ["&Run speedtest", "&Settings", "&Close"].iter().enumerate() {
@@ -282,9 +345,9 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
                 PCWSTR(class.as_ptr()),
                 PCWSTR(label.as_ptr()),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                ((16.0 + index as f32 * 104.0) * s) as i32,
-                (402.0 * s) as i32,
-                (96.0 * s) as i32,
+                (16.0 * s + index as f32 * (layout.width + 8.0 * s) / 3.0).round() as i32,
+                layout.buttons_y.round() as i32,
+                ((layout.width - 16.0 * s) / 3.0).round() as i32,
                 (28.0 * s) as i32,
                 hwnd,
                 HMENU((index + 1) as *mut _),
@@ -292,7 +355,7 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
                 None,
             )
         } {
-            if let Some(font) = &state.font {
+            if let Some(font) = &state.control_font {
                 font.apply_to(button);
             }
         }
@@ -343,12 +406,14 @@ unsafe extern "system" fn panel_proc(
                 background,
             );
             let s = state.scale;
+            let layout = state.layout(rect.right, rect.bottom);
             if let Some(font) = &state.title_font {
-                canvas.draw_text(16.0 * s, 12.0 * s, &state.snapshot.rates, font, palette.fg);
+                let rates = font.fit(&state.snapshot.rates, layout.width);
+                canvas.draw_text(16.0 * s, layout.heading_y, &rates, font, palette.fg);
             }
             state.graph.draw(
                 &mut canvas,
-                Rect::new(16.0 * s, 70.0 * s, 300.0 * s, 66.0 * s),
+                layout.graph,
                 &state.snapshot.samples,
                 &palette,
                 state.snapshot.fill,
@@ -357,14 +422,14 @@ unsafe extern "system" fn panel_proc(
             if let Some(font) = &state.font {
                 canvas.draw_text(
                     16.0 * s,
-                    42.0 * s,
+                    layout.traffic_y,
                     "Traffic · last 60 seconds",
                     font,
                     palette.fg,
                 );
                 canvas.draw_text(
                     16.0 * s,
-                    146.0 * s,
+                    layout.scale_y,
                     &format!("Shared auto scale: {:.1} Mbps", state.graph.scale()),
                     font,
                     palette.fg,
@@ -447,6 +512,7 @@ unsafe extern "system" fn panel_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canvas::TextRenderer;
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -456,6 +522,209 @@ mod tests {
             palette: crate::theme::palette_for("Default"),
             fill: false,
             testing: false,
+        }
+    }
+
+    #[test]
+    fn details_layout_and_dpi_lifecycle_keep_controls_inside_client() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        for dpi in [96, 120, 144, 192] {
+            DEACTIVATED.set(None);
+            toggle(
+                HWND::default(),
+                RECT {
+                    left: 100,
+                    top: 1050,
+                    right: 900,
+                    bottom: 1080,
+                },
+                dpi,
+                snapshot(),
+                100,
+                101,
+            );
+            let hwnd = PANEL.get();
+            assert!(!hwnd.is_invalid());
+            unsafe {
+                let state = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const PanelState);
+                let mut client = RECT::default();
+                GetClientRect(hwnd, &mut client).unwrap();
+                let layout = state.layout(client.right, client.bottom);
+                let title = state.title_font.as_ref().unwrap();
+                let label = state.font.as_ref().unwrap();
+                assert!(layout.heading_y >= 0.0);
+                assert!(layout.heading_y + title.line_height() < layout.traffic_y);
+                assert!(layout.traffic_y + label.line_height() < layout.graph.y);
+                assert!(layout.graph.bottom() < layout.scale_y);
+                assert!(layout.scale_y + label.line_height() < layout.body.y);
+                assert!(layout.body.bottom() < layout.buttons_y);
+                assert!(layout.body.height >= 180.0 * state.scale);
+                assert!(layout.buttons_y + 28.0 * state.scale < client.bottom as f32);
+                let long = title.fit("↓ 123456789.99 GB/s    ↑ 123456789.99 GB/s", layout.width);
+                assert!(long.ends_with('…'));
+                assert!(title.measure(&long) <= layout.width);
+                let mut origin = windows::Win32::Foundation::POINT::default();
+                assert!(windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut origin).as_bool());
+                for id in [1, 2, 3, 10] {
+                    let control = GetDlgItem(hwnd, id).unwrap();
+                    assert!(IsWindowVisible(control).as_bool());
+                    let mut bounds = RECT::default();
+                    GetWindowRect(control, &mut bounds).unwrap();
+                    assert!(bounds.left >= origin.x && bounds.top >= origin.y);
+                    assert!(bounds.right <= origin.x + client.right);
+                    assert!(bounds.bottom <= origin.y + client.bottom);
+                    if id == 1 {
+                        assert!(
+                            state
+                                .control_font
+                                .as_ref()
+                                .unwrap()
+                                .measure("Run speedtest")
+                                + 4.0 * state.scale
+                                <= (bounds.right - bounds.left) as f32
+                        );
+                    }
+                }
+                // The existing transition policy hides stale-DPI content. Reopen
+                // recreates all font/cache resources instead of stretching masks.
+                // Exercise handler policy directly, without relying on OS
+                // dispatch of synthetic monitor changes on an unaware test thread.
+                panel_proc(hwnd, WM_DPICHANGED, WPARAM(192), LPARAM(0));
+                assert!(!IsWindowVisible(hwnd).as_bool());
+            }
+            close();
+        }
+        DEACTIVATED.set(None);
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetGuiResources(process: windows::Win32::Foundation::HANDLE, flags: u32) -> u32;
+    }
+
+    #[test]
+    fn repeated_popups_release_native_and_text_resources() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        let process = unsafe { windows::Win32::System::Threading::GetCurrentProcess() };
+        let mut baseline = (0, 0);
+        for i in 0..41 {
+            DEACTIVATED.set(None);
+            toggle(
+                HWND::default(),
+                RECT {
+                    left: 100,
+                    top: 1050,
+                    right: 900,
+                    bottom: 1080,
+                },
+                [96, 120, 144, 192][i % 4],
+                snapshot(),
+                100,
+                101,
+            );
+            let hwnd = PANEL.get();
+            assert!(!hwnd.is_invalid());
+            let weak = unsafe {
+                let state = &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const PanelState);
+                let mask = state
+                    .title_font
+                    .as_ref()
+                    .unwrap()
+                    .mask(&state.snapshot.rates);
+                std::rc::Rc::downgrade(&mask.pixels)
+            };
+            close();
+            assert!(weak.upgrade().is_none());
+            let counts = unsafe { (GetGuiResources(process, 0), GetGuiResources(process, 1)) };
+            if i == 0 {
+                baseline = counts;
+            }
+            if i == 40 {
+                eprintln!("Popup lifecycle: GDI/USER {:?} -> {:?}", baseline, counts);
+                assert!(counts.0 <= baseline.0 + 4 && counts.1 <= baseline.1 + 4);
+            }
+        }
+        DEACTIVATED.set(None);
+    }
+
+    #[test]
+    #[ignore = "captures real desktop popups and measures presentation"]
+    fn details_rendering_benchmark_and_screenshots() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        let stage = std::env::var("NETSPEED_CAPTURE_STAGE").unwrap_or_else(|_| "after".into());
+        let output = std::env::current_dir()
+            .unwrap()
+            .join("target/rendering-comparison");
+        std::fs::create_dir_all(&output).unwrap();
+        unsafe {
+            windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+                windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            );
+        }
+        for dpi in [96, 120, 144, 192] {
+            for (case, rates) in [
+                ("short", "↓ 1.28 MB/s    ↑ 112 kB/s"),
+                ("long", "↓ 999.99 Gbps    ↑ 999.99 Gbps"),
+            ] {
+                let mut data = snapshot();
+                data.rates = rates.into();
+                data.body = "Adapter: Intel(R) Ethernet Connection with a very long interface name\r\nTCP latency: 8 ms\r\nSession: 1.28 GB\r\nDownload: 999.99 Gbps\r\nUpload: 999.99 Gbps".into();
+                data.samples = (0..60)
+                    .map(|i| NetSample {
+                        down_mbps: ((i * 17) % 75) as f64,
+                        up_mbps: ((i * 7) % 25) as f64,
+                        ts: crate::now_epoch() - 59.0 + i as f64,
+                    })
+                    .collect();
+                let start = Instant::now();
+                toggle(
+                    HWND::default(),
+                    RECT {
+                        left: 100,
+                        top: 1050,
+                        right: 900,
+                        bottom: 1080,
+                    },
+                    dpi,
+                    data,
+                    100,
+                    101,
+                );
+                let hwnd = PANEL.get();
+                assert!(!hwnd.is_invalid());
+                eprintln!("requested layout DPI {dpi}; actual window DPI {}", unsafe {
+                    windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd)
+                });
+                unsafe {
+                    let _ = windows::Win32::Graphics::Gdi::UpdateWindow(hwnd);
+                }
+                let cold = start.elapsed();
+                let start = Instant::now();
+                for _ in 0..100 {
+                    unsafe {
+                        let _ = InvalidateRect(hwnd, None, false);
+                        let _ = windows::Win32::Graphics::Gdi::UpdateWindow(hwnd);
+                    }
+                }
+                eprintln!(
+                    "{stage} {dpi} DPI {case}: open+first paint {:?}; warm paint+presentation {:?}",
+                    cold,
+                    start.elapsed() / 100
+                );
+                let mut rect = RECT::default();
+                unsafe {
+                    GetWindowRect(hwnd, &mut rect).unwrap();
+                }
+                let path = output.join(format!("{stage}-{dpi}-{case}.png"));
+                let script = format!("Add-Type -AssemblyName System.Drawing; $b = New-Object System.Drawing.Bitmap({}, {}); $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen({}, {}, 0, 0, $b.Size); $b.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose()", rect.right-rect.left, rect.bottom-rect.top, rect.left, rect.top, path.display());
+                assert!(std::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &script])
+                    .status()
+                    .unwrap()
+                    .success());
+                close();
+                DEACTIVATED.set(None);
+            }
         }
     }
 
@@ -473,6 +742,11 @@ mod tests {
         assert!(!hwnd.is_invalid());
         unsafe {
             assert!(IsWindowVisible(hwnd).as_bool());
+            assert_ne!(
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0,
+                0,
+                "network details must stack above the taskbar"
+            );
             let body = GetDlgItem(hwnd, 10).unwrap();
             assert_ne!(GetWindowTextLengthW(body), 0);
             let mut next = snapshot();

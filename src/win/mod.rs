@@ -6,7 +6,9 @@ pub mod dialog;
 pub mod gdi;
 pub mod menu;
 pub mod placement;
+pub mod startup;
 pub mod taskbar;
+pub mod text;
 pub mod tooltip;
 pub mod tray;
 

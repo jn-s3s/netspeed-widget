@@ -1,8 +1,7 @@
-//! Color palettes, system appearance and localized latency status colors.
+//! Color palettes, Windows appearance overrides and probe alert colors.
 //!
-//! The palette lives in one place because the widget, the graph and the menus
-//! all paint with the same colours, and a theme change has to land in one
-//! place.
+//! The widget and details graph share palette rules. Native menus use Windows
+//! styling. High-contrast settings override the selected preset.
 
 use std::sync::LazyLock;
 
@@ -29,6 +28,7 @@ pub struct Palette {
     pub good: Color,
     pub warn: Color,
     pub bad: Color,
+    pub bad_quiet: Color,
 }
 
 /// Name of the preset used when nothing else is stored.
@@ -47,10 +47,7 @@ fn default_palette() -> Palette {
     value
 }
 
-/// Builds a palette while keeping the health colours semantically consistent.
-///
-/// A palette names every colour it uses, so the argument list is long by
-/// nature rather than by accident.
+/// Builds a palette with health colors chosen for a light or dark background.
 #[expect(
     clippy::too_many_arguments,
     reason = "palette presets specify each named color and the light-mode flag"
@@ -76,6 +73,9 @@ fn palette(
         good: Color::from_hex(if light { "#16804a" } else { "#43c77a" }),
         warn: Color::from_hex(if light { "#9b6000" } else { "#f0b94f" }),
         bad: Color::from_hex(if light { "#bd3438" } else { "#ff6872" }),
+        // On dark taskbars, soften saturation rather than dimming small text.
+        // The old endpoints differed by only ~13%, which looked steady at a glance.
+        bad_quiet: Color::from_hex(if light { "#702027" } else { "#ffb3bb" }),
     }
 }
 
@@ -252,6 +252,7 @@ pub fn resolved_palette(
         value.good = value.fg;
         value.warn = value.fg;
         value.bad = value.fg;
+        value.bad_quiet = value.fg;
         value.border = value.fg;
         value.border_hover = value.fg;
     }
@@ -279,18 +280,97 @@ pub fn native_panel_palette(
     value
 }
 
-/// Maps a recorded health status to its palette colour.
-pub fn status_color(health: Health, palette: &Palette) -> Color {
-    match health {
-        Health::Good => palette.good,
-        Health::Warn => palette.warn,
-        Health::Bad => palette.bad,
+/// All widget text shares one opaque alert color; graph series stay independent.
+pub fn alert_color(
+    state: crate::latency::DisplayState,
+    palette: &Palette,
+    intensity: f32,
+) -> Option<Color> {
+    use crate::latency::DisplayState;
+    match state {
+        DisplayState::Slow(_) | DisplayState::Check => Some(palette.warn),
+        DisplayState::Failed => {
+            let t = intensity.clamp(0.0, 1.0);
+            let (quiet, bright) = (palette.bad_quiet, palette.bad);
+            Some(Color {
+                r: quiet.r + (bright.r - quiet.r) * t,
+                g: quiet.g + (bright.g - quiet.g) * t,
+                b: quiet.b + (bright.b - quiet.b) * t,
+                a: 1.0,
+            })
+        }
+        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn luminance(color: Color) -> f32 {
+        let linear = |channel: f32| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+
+    #[test]
+    fn failure_pulse_has_visible_color_separation_without_losing_contrast() {
+        use crate::latency::DisplayState;
+        for name in theme_names() {
+            let palette = palette_for(name);
+            let strong = alert_color(DisplayState::Failed, &palette, 1.0).unwrap();
+            let soft = alert_color(DisplayState::Failed, &palette, 0.0).unwrap();
+            let (a, b) = (luminance(strong), luminance(soft));
+            assert!(
+                (a.max(b) + 0.05) / (a.min(b) + 0.05) >= 1.6,
+                "{name}: pulse endpoints must not look like steady red"
+            );
+            let background = if palette.surface.a == 0.0 {
+                Color::from_hex("#202020")
+            } else {
+                palette.surface
+            };
+            let background = luminance(background);
+            for step in 0..=20 {
+                let text = luminance(
+                    alert_color(DisplayState::Failed, &palette, step as f32 / 20.0).unwrap(),
+                );
+                let contrast = (text.max(background) + 0.05) / (text.min(background) + 0.05);
+                assert!(
+                    contrast >= 4.5,
+                    "{name}: unreadable pulse at step {step}: {contrast}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pulse_is_opaque_and_overrides_never_reuse_alert_colors() {
+        use crate::latency::DisplayState;
+        for name in theme_names() {
+            let palette = palette_for(name);
+            for step in 0..=20 {
+                let color =
+                    alert_color(DisplayState::Failed, &palette, step as f32 / 20.0).unwrap();
+                assert_eq!(color.a, 1.0);
+                assert!(color.r >= palette.bad_quiet.r.min(palette.bad.r));
+                assert!(color.r <= palette.bad_quiet.r.max(palette.bad.r));
+            }
+            for state in [
+                DisplayState::Waiting,
+                DisplayState::Stale,
+                DisplayState::Testing,
+                DisplayState::Healthy(7.0),
+            ] {
+                assert!(alert_color(state, &palette, 0.0).is_none());
+            }
+        }
+    }
 
     #[test]
     fn unknown_theme_falls_back_to_default() {

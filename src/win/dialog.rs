@@ -2,8 +2,7 @@
 //!
 //! The dialog listens for the next key combination, so the user does not have
 //! to know the names of the virtual keys. A combo without Ctrl or Alt is
-//! refused, because such a shortcut would be taken by whatever window the
-//! user happens to be typing in.
+//! refused to avoid intercepting normal typing in other applications.
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -218,8 +217,8 @@ unsafe extern "system" fn dialog_proc(
             }
             // SAFETY: hwnd is the live dialog supplied to this procedure.
             let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96) as i32;
-            let title_font = Font::new("Segoe UI", 15 * dpi / 96, WEIGHT_BOLD);
-            let body_font = Font::new("Segoe UI", 13 * dpi / 96, WEIGHT_NORMAL);
+            let title_font = Font::native("Segoe UI", 15 * dpi / 96, WEIGHT_BOLD);
+            let body_font = Font::native("Segoe UI", 13 * dpi / 96, WEIGHT_NORMAL);
 
             let mut y = 16 * dpi / 96;
             if let Some(font) = title_font.as_ref() {

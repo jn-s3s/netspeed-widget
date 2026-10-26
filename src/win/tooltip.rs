@@ -9,7 +9,7 @@ use windows::Win32::UI::Controls::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, SendMessageW, WINDOW_STYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_POPUP,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 pub struct Tooltip {
@@ -31,7 +31,7 @@ impl Tooltip {
         }
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                 TOOLTIPS_CLASSW,
                 PCWSTR::null(),
                 WINDOW_STYLE(WS_POPUP.0 | TTS_ALWAYSTIP | TTS_NOPREFIX),
@@ -96,6 +96,19 @@ impl Tooltip {
                 self.hwnd,
                 windows::Win32::UI::Controls::TTM_POP,
                 WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+
+    /// Disables hover tracking during menus, dismissing any visible or pending tip.
+    pub fn set_active(&self, active: bool) {
+        // SAFETY: The tooltip window is owned by this object on the UI thread.
+        unsafe {
+            SendMessageW(
+                self.hwnd,
+                windows::Win32::UI::Controls::TTM_ACTIVATE,
+                WPARAM(usize::from(active)),
                 LPARAM(0),
             );
         }
@@ -175,6 +188,15 @@ mod tests {
             let mut tooltip = Tooltip::new(owner, 224, 48)
                 .expect("native tooltip must initialize common controls");
             let hwnd = tooltip.hwnd;
+            assert_ne!(
+                windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
+                    hwnd,
+                    windows::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE,
+                ) as u32
+                    & WS_EX_TOPMOST.0,
+                0,
+                "hover details must stack above the taskbar without activation"
+            );
             assert_eq!(
                 SendMessageW(
                     hwnd,
@@ -185,8 +207,21 @@ mod tests {
                 .0,
                 1
             );
+            tooltip.set_active(false);
             tooltip.update("Download: 24.8 Mbps\nUpload: 1.6 Mbps", 128, 48);
             assert_eq!(tooltip.tool.rect.right, 128);
+            tooltip.set_active(true);
+            assert_eq!(
+                SendMessageW(
+                    hwnd,
+                    windows::Win32::UI::Controls::TTM_GETTOOLCOUNT,
+                    WPARAM(0),
+                    LPARAM(0)
+                )
+                .0,
+                1,
+                "menu suppression must preserve the registered hover tool"
+            );
             tooltip.hide();
             drop(tooltip);
             assert!(!windows::Win32::UI::WindowsAndMessaging::IsWindow(hwnd).as_bool());

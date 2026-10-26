@@ -1,6 +1,6 @@
 //! Stable native menu/control identifiers, shared with lifecycle tests.
 
-/// Starts a speedtest using the selected provider.
+/// Starts a speedtest with the built-in HTTPS test and passive fallback.
 pub const CMD_RUN_SPEEDTEST: u32 = 1001;
 /// Toggles the taskbar traffic graph.
 pub const CMD_TOGGLE_GRAPH: u32 = 1002;
@@ -18,6 +18,8 @@ pub const CMD_QUIT: u32 = 1009;
 pub const CMD_DETAILS: u32 = 1012;
 /// Opens the settings menu.
 pub const CMD_SETTINGS: u32 = 1013;
+/// Toggles per-user Windows sign-in startup for the current executable.
+pub const CMD_TOGGLE_AUTOSTART: u32 = 1014;
 /// Selects the compact taskbar layout.
 pub const CMD_LAYOUT_COMPACT: u32 = 1100;
 /// Selects the balanced taskbar layout.
@@ -30,10 +32,12 @@ pub const CMD_UNITS_BITS: u32 = 1110;
 pub const CMD_UNITS_BYTES: u32 = 1111;
 /// Toggles automatic layout fitting.
 pub const CMD_AUTO_FIT: u32 = 1112;
-/// Toggles the subtle widget background.
+/// Toggles the subtle background preference for the Default theme.
 pub const CMD_SUBTLE_BACKGROUND: u32 = 1113;
 /// Toggles the traffic graph fill.
 pub const CMD_GRAPH_FILL: u32 = 1114;
+/// Toggles the failed-probe text pulse.
+pub const CMD_ANIMATE_ERRORS: u32 = 1115;
 /// First command ID reserved for theme presets, indexed by preset order.
 pub const CMD_THEME_BASE: u32 = 2000;
 /// First command ID reserved for taskbar monitors, indexed by menu order.

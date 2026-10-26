@@ -1,9 +1,9 @@
-//! The application: the taskbar widget, the tray icon and the services
-//! behind them.
+//! UI controller for the taskbar widget, tray icon and background measurements.
 //!
 //! The controller owns timers, the global hotkey and the tray icon. The widget
-//! is a non-activating child of Explorer's taskbar. All application state and window calls stay on the UI
-//! thread; workers publish network results through messages or snapshots.
+//! is a non-activating child of Explorer's taskbar. Application state and widget
+//! window calls stay on the UI thread. Measurement workers publish messages or
+//! snapshots; taskbar occupancy queries run on a separate worker.
 
 use crate::clock::now_epoch;
 use netspeed_widget::commands::*;
@@ -39,7 +39,7 @@ use crate::format::{
 };
 use crate::graph::TrafficGraph;
 use crate::hotkey;
-use crate::latency::{LatencyProbe, LatencyResult};
+use crate::latency::{DisplayState, LatencyProbe, LatencyResult, LATENCY_GOOD_MS};
 use crate::logger;
 use crate::paint::{self, Fonts, WidgetView};
 use crate::sampler::{NetSample, NetSampler};
@@ -49,18 +49,26 @@ use crate::theme::{self, Health, Palette};
 use crate::win::dialog;
 use crate::win::gdi::{blit_layered, to_wide};
 use crate::win::menu::{self, MenuEntry};
-use crate::win::placement::{choose_x, DensitySettler, OccupancyProbe, PlacementSettler};
+use crate::win::placement::{
+    choose_x, DensitySettler, OccupancyProbe, PlacementSettler, LAYOUT_REFRESH_MS,
+    WM_TASKBAR_LAYOUT_CHANGED, WM_TASKBAR_LAYOUT_READY,
+};
+use crate::win::startup;
 use crate::win::taskbar::{self, TaskbarWindow};
 use crate::win::tray::{TrayIcon, TRAY_CALLBACK};
 use crate::win::{appearance::Appearance, details, tooltip::Tooltip};
 
-/// Custom message carrying a background result to the UI thread.
+/// Notifies the UI thread that the speedtest result slot is ready to read.
 const WM_APP_SPEEDTEST: u32 = WM_APP + 1;
 
 /// Timer that refreshes the widget.
 const TIMER_TICK: usize = 1;
 /// Slow timer for taskbar recovery and scheduled speedtests.
 const TIMER_BACKGROUND: usize = 2;
+/// One-shot retry for a rate-limited event-driven layout scan.
+const TIMER_LAYOUT_RETRY: usize = 3;
+/// Repaints failure text only; never samples traffic or starts probes.
+const TIMER_FAILURE_PULSE: usize = 4;
 
 /// How often the widget refreshes, in milliseconds.
 const UI_TICK_MS: u32 = 250;
@@ -72,10 +80,8 @@ const GRAPH_SAMPLES: usize = 60;
 const SPEEDTEST_INTERVAL_SEC: f64 = 4.0 * 60.0 * 60.0;
 /// Delay before the first automatic speedtest after a fresh start.
 const SPEEDTEST_STARTUP_GRACE_SEC: f64 = 20.0;
-/// Delay before a failed speedtest is retried.
+/// Delay before retrying a failed speedtest or a passive estimate.
 const SPEEDTEST_RETRY_SEC: f64 = 15.0 * 60.0;
-/// Latency below this counts as healthy.
-const LATENCY_GOOD_MS: f64 = 80.0;
 /// Identifier of the global hotkey registration.
 const HOTKEY_ID: i32 = 1;
 
@@ -100,6 +106,8 @@ struct AppState {
     auto_fit: bool,
     subtle_background: bool,
     graph_fill: bool,
+    animate_errors: bool,
+    failure_pulse: Option<Instant>,
     density_settler: DensitySettler,
     down_formatter: RateFormatter,
     up_formatter: RateFormatter,
@@ -180,7 +188,9 @@ pub fn run() -> Result<(), String> {
 
     let controller = unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            // This hidden top-level window owns the settings menus, not the
+            // taskbar child. Keep its popups in front of Explorer's taskbar.
+            WS_EX_TOOLWINDOW | windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST,
             PCWSTR(controller_class.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
@@ -204,6 +214,7 @@ pub fn run() -> Result<(), String> {
         auto_fit,
         subtle_background,
         graph_fill,
+        animate_errors,
     } = config::display_preferences();
     let appearance = Appearance::current();
     let palette = theme::resolved_palette(&theme_name, appearance, subtle_background);
@@ -215,7 +226,9 @@ pub fn run() -> Result<(), String> {
     let probe = LatencyProbe::new(Duration::from_secs(2), Duration::from_millis(1500));
 
     let height = 48;
-    let width = paint::widget_width(layout, show_graph, 96);
+    let fonts = Fonts::for_dpi(96, layout == DisplayLayout::SingleLine, height)
+        .ok_or("could not create widget fonts")?;
+    let width = paint::widget_width(layout, show_graph, &fonts);
     let next_due = next_speedtest_due(
         config::speedtest().as_ref(),
         now_epoch(),
@@ -239,6 +252,8 @@ pub fn run() -> Result<(), String> {
         auto_fit,
         subtle_background,
         graph_fill,
+        animate_errors,
+        failure_pulse: None,
         density_settler: DensitySettler::default(),
         down_formatter: RateFormatter::default(),
         up_formatter: RateFormatter::default(),
@@ -263,7 +278,7 @@ pub fn run() -> Result<(), String> {
             })
             .unwrap_or_default(),
         graph: TrafficGraph::new(),
-        fonts: Fonts::for_dpi(96, layout == DisplayLayout::SingleLine, height),
+        fonts: Some(fonts),
         width,
         height,
         hovering: false,
@@ -274,7 +289,7 @@ pub fn run() -> Result<(), String> {
         widget_visible,
         placement_available: false,
         widget_shown: false,
-        occupancy: OccupancyProbe::new(),
+        occupancy: OccupancyProbe::new(controller),
         placement_settler: PlacementSettler::default(),
         show_graph,
         hotkey_combo,
@@ -464,7 +479,7 @@ fn create_widget(hinstance: HINSTANCE, class: &[u16]) {
     }
 }
 
-/// Re-evaluate the saved monitor preference even while a fallback remains valid.
+/// Re-evaluates the saved monitor preference even while a fallback remains valid.
 fn preferred_taskbar() -> Option<TaskbarWindow> {
     let taskbars = taskbar::find_taskbars();
     let wanted = config::taskbar_monitor();
@@ -554,10 +569,25 @@ fn position_widget(state: &mut AppState) {
         sync_widget_visibility(state);
         return;
     };
-    let taskbar_height = rect.bottom - rect.top;
-    let height = taskbar_height.max(1);
+    let Some(widget_rect) = taskbar::widget_rect(rect) else {
+        state.placement_available = false;
+        sync_widget_visibility(state);
+        return;
+    };
+    let height = widget_rect.bottom - widget_rect.top;
     let dpi = unsafe { GetDpiForWindow(taskbar.hwnd) }.max(96);
     let desired = paint::effective_layout(state.layout, height, dpi);
+    let geometry_changed = dpi != state.dpi || height != state.height;
+    let font_layout_changed = (desired == DisplayLayout::SingleLine)
+        != (state.effective_layout == DisplayLayout::SingleLine);
+    if geometry_changed || font_layout_changed || state.fonts.is_none() {
+        state.fonts = Fonts::for_dpi(dpi, desired == DisplayLayout::SingleLine, height);
+    }
+    let Some(fonts) = state.fonts.as_ref() else {
+        state.placement_available = false;
+        sync_widget_visibility(state);
+        return;
+    };
     let occupied = state
         .occupancy
         .occupied(taskbar.hwnd, state.widget, rect)
@@ -565,10 +595,20 @@ fn position_widget(state: &mut AppState) {
     let gap = (8.0 * dpi as f32 / 96.0).round() as i32;
     let tray_left = taskbar::tray_left(taskbar.hwnd, rect);
     let can_fit = |layout, margin| {
-        let width = paint::widget_width(layout, state.show_graph, dpi) + margin;
+        let width = paint::widget_width(layout, state.show_graph, fonts) + margin;
         occupied
             .as_ref()
-            .and_then(|areas| choose_x(rect, areas, width, tray_left - width, None, gap))
+            .and_then(|areas| {
+                choose_x(
+                    rect,
+                    areas,
+                    width,
+                    tray_left - width - gap,
+                    None,
+                    gap,
+                    state.placement,
+                )
+            })
             .is_some()
     };
     let mut candidate = desired;
@@ -589,28 +629,22 @@ fn position_widget(state: &mut AppState) {
         // Unknown occupancy is not evidence that there is room to expand.
         candidate = DisplayLayout::Compact;
     }
-    let geometry_changed = dpi != state.dpi || height != state.height;
     state.effective_layout = state.density_settler.choose(
         state.effective_layout,
         candidate,
         geometry_changed || state.placed_for.is_none(),
         Instant::now(),
     );
-    let width = paint::widget_width(state.effective_layout, state.show_graph, dpi);
+    let width = paint::widget_width(state.effective_layout, state.show_graph, fonts);
     if state.width != width || geometry_changed {
         state.width = width;
         state.height = height;
         state.dpi = dpi;
-        state.fonts = Fonts::for_dpi(
-            dpi,
-            state.effective_layout == DisplayLayout::SingleLine,
-            height,
-        );
         state.placed_for = None;
     }
     let preferred = match state.placement {
         Placement::Left => rect.left,
-        Placement::Tray => (tray_left - width).max(rect.left),
+        Placement::Tray => (tray_left - width - gap).max(rect.left),
     };
     let x = occupied.as_ref().and_then(|occupied| {
         choose_x(
@@ -620,17 +654,21 @@ fn position_widget(state: &mut AppState) {
             preferred,
             state.placed_for.map(|r| r.left),
             gap,
+            state.placement,
         )
     });
     let target = x.map(|x| RECT {
         left: x,
-        top: rect.top,
+        top: widget_rect.top,
         right: x + width,
-        bottom: rect.bottom,
+        bottom: widget_rect.bottom,
     });
     // Explicit placement changes clear placed_for and take effect immediately.
     let same_geometry = state.placed_for.is_some_and(|r| {
-        r.top == rect.top && r.bottom == rect.bottom && r.left >= rect.left && r.right <= rect.right
+        r.top == widget_rect.top
+            && r.bottom == widget_rect.bottom
+            && r.left >= rect.left
+            && r.right <= rect.right
     });
     if same_geometry {
         if !state
@@ -653,7 +691,7 @@ fn position_widget(state: &mut AppState) {
         sync_widget_visibility(state);
         return;
     }
-    let y = rect.top;
+    let y = target.top;
     let Some(origin) = taskbar::client_point(taskbar.hwnd, POINT { x, y }) else {
         state.placed_for = None;
         state.placement_available = false;
@@ -723,6 +761,10 @@ fn ping_text(state: &AppState) -> String {
     crate::latency::ping_label(state.probe.latest(), now_epoch(), state.speedtest_running)
 }
 
+fn displayed_state(state: &AppState) -> DisplayState {
+    DisplayState::derive(state.probe.latest(), now_epoch(), state.speedtest_running)
+}
+
 /// Registers the global hotkey.
 fn apply_hotkey(state: &mut AppState) {
     if state.hotkey_ok {
@@ -784,6 +826,7 @@ fn start_speedtest(manual: bool) {
         }
         state.speedtest_running = true;
         state.speedtest_summary = "Speedtest is running...".to_string();
+        render(state);
         state.controller
     };
     logger::info(
@@ -830,7 +873,7 @@ fn start_speedtest(manual: bool) {
     }
 }
 
-/// The result of the last finished speedtest.
+/// Shared slot for a worker's speedtest result, read on completion notification.
 fn pending_result() -> &'static Mutex<Option<SpeedtestResult>> {
     static RESULT: OnceLock<Mutex<Option<SpeedtestResult>>> = OnceLock::new();
     RESULT.get_or_init(|| Mutex::new(None))
@@ -879,6 +922,7 @@ fn finish_speedtest(result: Option<SpeedtestResult>) {
         }
     }
     update_tray_tooltip(state);
+    render(state);
 }
 
 /// The controller window procedure.
@@ -896,6 +940,40 @@ unsafe extern "system" fn controller_proc(
 
 unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        windows::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE
+        | windows::Win32::UI::WindowsAndMessaging::WM_THEMECHANGED
+        | windows::Win32::UI::WindowsAndMessaging::WM_SYSCOLORCHANGE => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                state.appearance = Appearance::current();
+                state.palette = theme::resolved_palette(
+                    &state.theme_name,
+                    state.appearance,
+                    state.subtle_background,
+                );
+                render(state);
+            }
+            LRESULT(0)
+        }
+        WM_TASKBAR_LAYOUT_CHANGED | WM_TASKBAR_LAYOUT_READY => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                if msg == WM_TASKBAR_LAYOUT_CHANGED {
+                    state.occupancy.invalidate();
+                }
+                position_widget(state);
+                render(state);
+                // SAFETY: The timer belongs to this controller and only posts
+                // WM_TIMER. The regular UI timer remains a fallback on failure.
+                if unsafe { SetTimer(hwnd, TIMER_LAYOUT_RETRY, LAYOUT_REFRESH_MS, None) } == 0 {
+                    logger::warning(
+                        "placement",
+                        "could not schedule layout retry; using UI timer",
+                    );
+                }
+            }
+            LRESULT(0)
+        }
         WM_TIMER => {
             tick(wparam.0);
             LRESULT(0)
@@ -1113,9 +1191,35 @@ fn set_hovering(hovering: bool) {
     render(state);
 }
 
-/// The UI refresh.
+/// Handles refresh, recovery, placement-retry and failure-pulse timers.
 fn tick(timer: usize) {
     match timer {
+        TIMER_FAILURE_PULSE => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                render(state);
+            }
+            return;
+        }
+        TIMER_LAYOUT_RETRY => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                // SAFETY: Stop this controller's retry timer after one tick.
+                if unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                        state.controller,
+                        TIMER_LAYOUT_RETRY,
+                    )
+                }
+                .is_err()
+                {
+                    logger::warning("placement", "could not stop layout retry timer");
+                }
+                position_widget(state);
+                render(state);
+            }
+            return;
+        }
         TIMER_TICK => {}
         TIMER_BACKGROUND => {
             let preferred = preferred_taskbar();
@@ -1243,7 +1347,7 @@ fn apply_sample(state: &mut AppState, sample: NetSample) {
     }
 }
 
-/// Records the health of the latest latency reading.
+/// Updates display health from the latest probe, holding it steady during speedtests.
 fn apply_latency(state: &mut AppState) {
     let result = state.probe.latest();
     if result.ts == 0.0 {
@@ -1271,6 +1375,7 @@ fn health_for_latency(result: LatencyResult) -> Health {
 
 /// Draws the widget.
 fn render(state: &mut AppState) {
+    sync_failure_animation(state);
     if state.widget.is_invalid() || !state.widget_visible || !state.placement_available {
         return;
     }
@@ -1279,16 +1384,14 @@ fn render(state: &mut AppState) {
     };
     let mut canvas = Canvas::new(state.width, state.height);
     let samples = state.sampler.history();
-    let result = state.probe.latest();
-    let ping_text = ping_text(state);
-    let ping_pending =
-        state.speedtest_running || result.ts == 0.0 || now_epoch() - result.ts > 10.0;
     let view = WidgetView {
         down: &state.down_text,
         up: &state.up_text,
-        ping_text: &ping_text,
-        health: state.health,
-        ping_pending,
+        status: displayed_state(state),
+        failure_intensity: state
+            .failure_pulse
+            .map(|start| pulse_intensity(start.elapsed().as_secs_f32()))
+            .unwrap_or(1.0),
         samples: &samples,
         layout: state.effective_layout,
         show_graph: state.show_graph,
@@ -1296,6 +1399,62 @@ fn render(state: &mut AppState) {
     };
     paint::paint(&mut canvas, fonts, &view, &state.palette, &mut state.graph);
     state.pending_canvas = Some(canvas);
+}
+
+fn animate_failure(
+    status: DisplayState,
+    visible: bool,
+    enabled: bool,
+    appearance: Appearance,
+) -> bool {
+    status == DisplayState::Failed
+        && visible
+        && enabled
+        && appearance.animations
+        && !appearance.high_contrast
+}
+
+fn pulse_intensity(elapsed: f32) -> f32 {
+    // Full strength on entry; a smooth two-second cycle with opaque endpoints.
+    (1.0 + (elapsed * std::f32::consts::PI).cos()) * 0.5
+}
+
+fn sync_failure_animation(state: &mut AppState) {
+    let animate = animate_failure(
+        displayed_state(state),
+        state.widget_shown,
+        state.animate_errors,
+        state.appearance,
+    );
+    match (animate, state.failure_pulse) {
+        (true, None) => {
+            // SAFETY: The UI-thread controller owns this message-only timer.
+            if unsafe { SetTimer(state.controller, TIMER_FAILURE_PULSE, 50, None) } != 0 {
+                state.failure_pulse = Some(Instant::now());
+            } else {
+                logger::warning(
+                    "paint",
+                    "could not start failure pulse timer; using steady red",
+                );
+            }
+        }
+        (false, Some(_)) => {
+            // SAFETY: This timer belongs to the live controller on the UI thread.
+            if let Err(err) = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                    state.controller,
+                    TIMER_FAILURE_PULSE,
+                )
+            } {
+                logger::warning(
+                    "paint",
+                    &format!("could not stop failure pulse timer: {err}"),
+                );
+            }
+            state.failure_pulse = None;
+        }
+        _ => {}
+    }
 }
 
 /// Win32 may dispatch sent messages while waiting for Explorer. Never run these
@@ -1309,6 +1468,7 @@ fn flush_native_effects() {
         let effects = {
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
             guard.as_mut().map(|state| {
+                sync_failure_animation(state);
                 let tip = state.pending_tray_tip.take();
                 let tray = if tip.is_some() {
                     state.tray.take()
@@ -1401,18 +1561,8 @@ fn flush_native_effects() {
 
 /// Shared text for native hover details and the keyboard-accessible panel.
 fn details_snapshot(state: &AppState) -> details::Snapshot {
-    let result = state.probe.latest();
-    let probe = if result.ts == 0.0 {
-        "Waiting for first probe".to_string()
-    } else if now_epoch() - result.ts > 10.0 {
-        "Probe result unavailable (stale)".to_string()
-    } else if !result.ok {
-        "Probe failed (TCP and ICMP)".to_string()
-    } else if let Some(ms) = result.ms {
-        format!("TCP latency: {ms:.0} ms")
-    } else {
-        "ICMP reachable; TCP probe blocked".to_string()
-    };
+    let display = displayed_state(state);
+    let probe = format!("{}: {}", display.label(), display.explanation());
     let (down, up) = state.sampler.session_totals();
     let speedtest = config::speedtest()
         .map(|test| {
@@ -1545,10 +1695,22 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         id: CMD_DETAILS,
         label: "Network details".to_string(),
     });
+    entries.push(MenuEntry::Check {
+        id: CMD_TOGGLE_VISIBILITY,
+        label: "Show widget".to_string(),
+        checked: state.widget_visible,
+    });
+    if state.widget_visible && !state.placement_available {
+        entries.push(MenuEntry::Disabled {
+            label: "Taskbar space unavailable—tray only".to_string(),
+        });
+    }
+    entries.push(MenuEntry::Separator);
+    let mut appearance = Vec::new();
     let themes: Vec<MenuEntry> = theme::theme_names()
         .iter()
         .enumerate()
-        .map(|(index, name)| MenuEntry::Check {
+        .map(|(index, name)| MenuEntry::Radio {
             id: CMD_THEME_BASE + index as u32,
             label: if *name == theme::DEFAULT_THEME {
                 "Follow Windows (transparent)".to_string()
@@ -1558,17 +1720,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             checked: *name == state.theme_name,
         })
         .collect();
-    entries.push(MenuEntry::Submenu {
-        label: "Theme".to_string(),
-        items: themes,
-    });
-
-    entries.push(MenuEntry::Check {
-        id: CMD_TOGGLE_GRAPH,
-        label: "Show traffic graph".to_string(),
-        checked: state.show_graph,
-    });
-    entries.push(MenuEntry::Submenu {
+    appearance.push(MenuEntry::Submenu {
         label: "Layout".to_string(),
         items: [
             DisplayLayout::Compact,
@@ -1576,7 +1728,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             DisplayLayout::SingleLine,
         ]
         .iter()
-        .map(|layout| MenuEntry::Check {
+        .map(|layout| MenuEntry::Radio {
             id: match layout {
                 DisplayLayout::Compact => CMD_LAYOUT_COMPACT,
                 DisplayLayout::Balanced => CMD_LAYOUT_BALANCED,
@@ -1584,12 +1736,13 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             },
             label: match layout {
                 DisplayLayout::Compact => "Compact",
-                DisplayLayout::Balanced => "Balanced (recommended)",
+                DisplayLayout::Balanced => "Balanced",
                 DisplayLayout::SingleLine => "Single line",
             }
             .to_string(),
             checked: state.layout == *layout,
         })
+        .chain(std::iter::once(MenuEntry::Separator))
         .chain(std::iter::once(MenuEntry::Check {
             id: CMD_AUTO_FIT,
             label: "Auto-fit crowded taskbars".to_string(),
@@ -1597,53 +1750,73 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         }))
         .collect(),
     });
-    entries.push(MenuEntry::Submenu {
+    appearance.push(MenuEntry::Submenu {
         label: "Units".to_string(),
         items: vec![
-            MenuEntry::Check {
+            MenuEntry::Radio {
                 id: CMD_UNITS_BITS,
                 label: "Bits (Kbps / Mbps / Gbps)".to_string(),
                 checked: state.units == SpeedUnits::Bits,
             },
-            MenuEntry::Check {
+            MenuEntry::Radio {
                 id: CMD_UNITS_BYTES,
-                label: "Bytes (kB/s / MB/s / GB/s, decimal)".to_string(),
+                label: "Bytes (kB/s / MB/s / GB/s)".to_string(),
                 checked: state.units == SpeedUnits::Bytes,
             },
         ],
     });
-    entries.push(MenuEntry::Check {
-        id: CMD_SUBTLE_BACKGROUND,
-        label: "Subtle background (Follow Windows)".to_string(),
-        checked: state.subtle_background,
+    appearance.push(MenuEntry::Submenu {
+        label: "Theme".to_string(),
+        items: themes,
     });
-    entries.push(MenuEntry::Check {
+    appearance.push(MenuEntry::DependentCheck {
+        id: CMD_SUBTLE_BACKGROUND,
+        label: "Subtle background".to_string(),
+        checked: state.subtle_background,
+        enabled: state.theme_name == theme::DEFAULT_THEME,
+    });
+    appearance.push(MenuEntry::Separator);
+    appearance.push(MenuEntry::DependentCheck {
+        id: CMD_TOGGLE_GRAPH,
+        label: if state.layout != DisplayLayout::Balanced {
+            "Show traffic graph (requires Balanced layout)"
+        } else if state.effective_layout != DisplayLayout::Balanced {
+            "Show traffic graph (unavailable at current taskbar size)"
+        } else {
+            "Show traffic graph"
+        }
+        .to_string(),
+        checked: state.show_graph,
+        enabled: state.layout == DisplayLayout::Balanced
+            && state.effective_layout == DisplayLayout::Balanced,
+    });
+    appearance.push(MenuEntry::Check {
         id: CMD_GRAPH_FILL,
         label: "Shade download area".to_string(),
         checked: state.graph_fill,
     });
+    appearance.push(MenuEntry::Check {
+        id: CMD_ANIMATE_ERRORS,
+        label: "Animate error indicator".to_string(),
+        checked: state.animate_errors,
+    });
 
-    let placement_items = vec![
-        MenuEntry::Check {
+    entries.push(MenuEntry::Submenu {
+        label: "Appearance".to_string(),
+        items: appearance,
+    });
+    let mut taskbar_items = vec![
+        MenuEntry::Radio {
             id: CMD_PLACEMENT_TRAY,
-            label: "Next to the notification area".to_string(),
+            label: "Next to notification area".to_string(),
             checked: state.placement == Placement::Tray,
         },
-        MenuEntry::Check {
+        MenuEntry::Radio {
             id: CMD_PLACEMENT_LEFT,
             label: "Prefer left side".to_string(),
             checked: state.placement == Placement::Left,
         },
     ];
-    entries.push(MenuEntry::Submenu {
-        label: "Placement".to_string(),
-        items: placement_items,
-    });
-    if state.widget_visible && !state.placement_available {
-        entries.push(MenuEntry::Disabled {
-            label: "Taskbar space unavailable (tray only)".to_string(),
-        });
-    }
 
     let taskbars = taskbar::find_taskbars();
     state.menu_devices = taskbars.iter().map(taskbar::monitor_device).collect();
@@ -1658,7 +1831,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                     Some(device) => format!("Display {device}"),
                     None => format!("Display {}", index + 1),
                 };
-                MenuEntry::Check {
+                MenuEntry::Radio {
                     id: CMD_TASKBAR_BASE + index as u32,
                     label,
                     checked: if current.is_some() {
@@ -1669,22 +1842,41 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                 }
             })
             .collect();
-        entries.push(MenuEntry::Submenu {
+        taskbar_items.push(MenuEntry::Separator);
+        taskbar_items.push(MenuEntry::Submenu {
             label: "Display".to_string(),
             items,
         });
     }
 
-    entries.push(MenuEntry::Command {
-        id: CMD_CHANGE_HOTKEY,
-        label: hotkey_label(state.hotkey_ok, &state.hotkey_combo),
+    entries.push(MenuEntry::Submenu {
+        label: "Taskbar".to_string(),
+        items: taskbar_items,
+    });
+    let startup = match startup::enabled() {
+        Ok(checked) => MenuEntry::Check {
+            id: CMD_TOGGLE_AUTOSTART,
+            label: "Start with Windows".to_string(),
+            checked,
+        },
+        Err(err) => {
+            logger::error("startup", &err);
+            MenuEntry::Disabled {
+                label: "Start with Windows (registry unavailable)".to_string(),
+            }
+        }
+    };
+    entries.push(MenuEntry::Submenu {
+        label: "Preferences".to_string(),
+        items: vec![
+            startup,
+            MenuEntry::Command {
+                id: CMD_CHANGE_HOTKEY,
+                label: hotkey_label(state.hotkey_ok, &state.hotkey_combo),
+            },
+        ],
     });
     entries.push(MenuEntry::Separator);
-    entries.push(MenuEntry::Check {
-        id: CMD_TOGGLE_VISIBILITY,
-        label: "Show widget".to_string(),
-        checked: state.widget_visible,
-    });
     entries.push(MenuEntry::Command {
         id: CMD_QUIT,
         label: "Quit".to_string(),
@@ -1754,6 +1946,7 @@ fn show_popup_menu(owner: HWND, entries: &[MenuEntry], cursor: POINT) {
         }
         state.menu_open = true;
     }
+    set_tooltip_active(false);
     let selected = menu::show(owner, entries, cursor.x, cursor.y);
     {
         let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
@@ -1761,8 +1954,31 @@ fn show_popup_menu(owner: HWND, entries: &[MenuEntry], cursor: POINT) {
             state.menu_open = false;
         }
     }
+    set_tooltip_active(true);
     if let Some(id) = selected {
         handle_command(id);
+    }
+}
+
+/// Native tooltip messages can reenter the widget, so send them without STATE locked.
+fn set_tooltip_active(active: bool) {
+    let (mut tooltip, widget) = {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        (state.tooltip.take(), state.widget)
+    };
+    if let Some(tooltip) = tooltip.as_ref() {
+        tooltip.set_active(active);
+    }
+    {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(state) = guard.as_mut() {
+            if state.widget == widget {
+                state.tooltip = tooltip.take();
+            }
+        }
     }
 }
 
@@ -1828,7 +2044,8 @@ fn handle_command(id: u32) {
         | CMD_UNITS_BYTES
         | CMD_AUTO_FIT
         | CMD_SUBTLE_BACKGROUND
-        | CMD_GRAPH_FILL => {
+        | CMD_GRAPH_FILL
+        | CMD_ANIMATE_ERRORS => {
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
             if let Some(state) = guard.as_mut() {
                 match id {
@@ -1847,6 +2064,7 @@ fn handle_command(id: u32) {
                     CMD_AUTO_FIT => state.auto_fit = !state.auto_fit,
                     CMD_SUBTLE_BACKGROUND => state.subtle_background = !state.subtle_background,
                     CMD_GRAPH_FILL => state.graph_fill = !state.graph_fill,
+                    CMD_ANIMATE_ERRORS => state.animate_errors = !state.animate_errors,
                     _ => {}
                 }
                 use config::DisplayPreference;
@@ -1858,6 +2076,7 @@ fn handle_command(id: u32) {
                     CMD_AUTO_FIT => DisplayPreference::AutoFit(state.auto_fit),
                     CMD_SUBTLE_BACKGROUND => DisplayPreference::Background(state.subtle_background),
                     CMD_GRAPH_FILL => DisplayPreference::Fill(state.graph_fill),
+                    CMD_ANIMATE_ERRORS => DisplayPreference::AnimateErrors(state.animate_errors),
                     _ => unreachable!("display command was matched above"),
                 });
                 state.palette = theme::resolved_palette(
@@ -1867,6 +2086,7 @@ fn handle_command(id: u32) {
                 );
                 state.placed_for = None;
                 state.density_settler.reset();
+                render(state);
             }
         }
         CMD_RUN_SPEEDTEST => start_speedtest(true),
@@ -1896,6 +2116,7 @@ fn handle_command(id: u32) {
         }
         CMD_CHANGE_HOTKEY => change_hotkey(),
         CMD_TOGGLE_VISIBILITY => toggle_visibility(),
+        CMD_TOGGLE_AUTOSTART => toggle_autostart(),
         CMD_QUIT => {
             shutdown();
             unsafe {
@@ -1903,6 +2124,30 @@ fn handle_command(id: u32) {
             }
         }
         _ => {}
+    }
+}
+
+fn toggle_autostart() {
+    let result = startup::enabled().and_then(|enabled| {
+        startup::set_enabled(!enabled)?;
+        logger::info("startup", &format!("start with Windows: {}", !enabled));
+        Ok(())
+    });
+    if let Err(err) = result {
+        logger::error("startup", &err);
+        let text = to_wide(&format!("Could not change Start with Windows.\n\n{err}"));
+        let title = to_wide("NetSpeed Widget");
+        // SAFETY: The owner is the UI-thread controller; both terminated strings
+        // remain live throughout the synchronous call. STATE is not locked.
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            MessageBoxW(
+                state_controller(),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
     }
 }
 
@@ -1988,10 +2233,18 @@ fn shutdown() {
     state.sampler.stop();
     state.probe.stop();
     unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+            state.controller,
+            TIMER_FAILURE_PULSE,
+        );
         let _ = UnregisterHotKey(state.controller, state.hotkey_id);
         let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(state.controller, TIMER_TICK);
         let _ =
             windows::Win32::UI::WindowsAndMessaging::KillTimer(state.controller, TIMER_BACKGROUND);
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+            state.controller,
+            TIMER_LAYOUT_RETRY,
+        );
     }
     if let Some(tray) = state.tray.as_mut() {
         tray.remove();
@@ -2006,6 +2259,63 @@ fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_only_runs_for_visible_failures_with_all_preferences_enabled() {
+        let appearance = Appearance {
+            animations: true,
+            ..Default::default()
+        };
+        assert!(animate_failure(
+            DisplayState::Failed,
+            true,
+            true,
+            appearance
+        ));
+        for status in [
+            DisplayState::Healthy(7.0),
+            DisplayState::Slow(80.0),
+            DisplayState::Check,
+            DisplayState::Waiting,
+            DisplayState::Stale,
+            DisplayState::Testing,
+        ] {
+            assert!(!animate_failure(status, true, true, appearance));
+        }
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            false,
+            true,
+            appearance
+        ));
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            true,
+            false,
+            appearance
+        ));
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            true,
+            true,
+            Appearance {
+                animations: false,
+                ..appearance
+            }
+        ));
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            true,
+            true,
+            Appearance {
+                high_contrast: true,
+                ..appearance
+            }
+        ));
+        assert_eq!(pulse_intensity(0.0), 1.0);
+        assert!(pulse_intensity(1.0).abs() < 0.0001);
+        assert!((pulse_intensity(2.0) - 1.0).abs() < 0.0001);
+    }
 
     #[test]
     fn latency_health_covers_tcp_icmp_and_failure() {

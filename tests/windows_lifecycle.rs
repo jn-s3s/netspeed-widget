@@ -121,6 +121,101 @@ fn find_widget() -> Option<HWND> {
 
 struct OpenMenu(HWND);
 
+fn assert_menu_organization(popup: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetMenuItemCount, GetMenuItemID, GetMenuItemInfoW, GetMenuStringW, GetSubMenu, HMENU,
+        MENUITEMINFOW, MFT_RADIOCHECK, MF_BYPOSITION, MIIM_FTYPE,
+    };
+    // MN_GETHMENU retrieves the native handle from a popup window without input injection.
+    let mut result = 0;
+    assert_ne!(
+        unsafe {
+            SendMessageTimeoutW(
+                popup,
+                0x01E1,
+                WPARAM(0),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG,
+                2000,
+                Some(&mut result),
+            )
+        }
+        .0,
+        0
+    );
+    let menu = HMENU(result as *mut _);
+    fn labels(menu: HMENU) -> Vec<String> {
+        (0..unsafe { GetMenuItemCount(menu) })
+            .map(|index| {
+                let mut text = [0_u16; 256];
+                let count =
+                    unsafe { GetMenuStringW(menu, index as u32, Some(&mut text), MF_BYPOSITION) };
+                String::from_utf16_lossy(&text[..count as usize])
+            })
+            .collect()
+    }
+    let root = labels(menu);
+    assert_eq!(&root[..2], &["Network details", "Show widget"]);
+    let appearance_index = root.iter().position(|label| label == "Appearance").unwrap();
+    assert_eq!(
+        &root[appearance_index..],
+        &["Appearance", "Taskbar", "Preferences", "", "Quit"]
+    );
+    let appearance = unsafe { GetSubMenu(menu, appearance_index as i32) };
+    let appearance_labels = labels(appearance);
+    assert_eq!(
+        &appearance_labels[..5],
+        &["Layout", "Units", "Theme", "Subtle background", ""]
+    );
+    assert!(appearance_labels[5].starts_with("Show traffic graph"));
+    assert_eq!(
+        &appearance_labels[6..],
+        &["Shade download area", "Animate error indicator"]
+    );
+    for index in 0..3 {
+        let submenu = unsafe { GetSubMenu(appearance, index) };
+        let mut info = MENUITEMINFOW {
+            cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+            fMask: MIIM_FTYPE,
+            ..Default::default()
+        };
+        unsafe { GetMenuItemInfoW(submenu, 0, true, &mut info) }.unwrap();
+        assert!(info.fType.contains(MFT_RADIOCHECK));
+    }
+    let layout = unsafe { GetSubMenu(appearance, 0) };
+    assert_eq!(
+        labels(layout),
+        [
+            "Compact",
+            "Balanced",
+            "Single line",
+            "",
+            "Auto-fit crowded taskbars"
+        ]
+    );
+    let taskbar = unsafe { GetSubMenu(menu, appearance_index as i32 + 1) };
+    let taskbar_labels = labels(taskbar);
+    assert_eq!(
+        &taskbar_labels[..2],
+        &["Next to notification area", "Prefer left side"]
+    );
+    assert!(taskbar_labels.len() == 2 || taskbar_labels[2..] == ["", "Display"]);
+    let preferences = unsafe { GetSubMenu(menu, appearance_index as i32 + 2) };
+    assert!(labels(preferences)[0].starts_with("Start with Windows"));
+    assert!(labels(preferences)[1].starts_with("Change visibility shortcut…"));
+    assert_eq!(unsafe { GetMenuItemID(preferences, 1) }, CMD_CHANGE_HOTKEY);
+    fn assert_max_depth(menu: HMENU, depth: usize) {
+        assert!(depth <= 2, "more than two submenu levels");
+        for index in 0..unsafe { GetMenuItemCount(menu) } {
+            let submenu = unsafe { GetSubMenu(menu, index) };
+            if !submenu.is_invalid() {
+                assert_max_depth(submenu, depth + 1);
+            }
+        }
+    }
+    assert_max_depth(menu, 0);
+}
+
 struct SiblingWindow(HWND);
 
 impl Drop for SiblingWindow {
@@ -211,9 +306,16 @@ impl Drop for OpenMenu {
     }
 }
 
-fn popup_stays_in_front_of_widget(widget: HWND, controller: HWND) {
+fn popup_stays_in_front_of_widget(
+    widget: HWND,
+    controller: HWND,
+    source: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) {
     let _cleanup = OpenMenu(controller);
-    unsafe { PostMessageW(widget, WM_RBUTTONUP, WPARAM(0), LPARAM(0)) }.unwrap();
+    unsafe { PostMessageW(source, message, wparam, lparam) }.unwrap();
     let class = wide("#32768");
     let thread = unsafe { GetWindowThreadProcessId(widget, None) };
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -240,6 +342,7 @@ fn popup_stays_in_front_of_widget(widget: HWND, controller: HWND) {
         assert!(Instant::now() < deadline, "right-click popup did not open");
         std::thread::sleep(Duration::from_millis(20));
     };
+    assert_menu_organization(popup);
     // Let multiple UI timers run inside TrackPopupMenuEx's nested message loop.
     // The menu must stay above the taskbar containing the widget.
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -268,11 +371,117 @@ fn popup_stays_in_front_of_widget(widget: HWND, controller: HWND) {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    assert_keyboard_submenus(popup, thread);
     unsafe { PostMessageW(controller, WM_CANCELMODE, WPARAM(0), LPARAM(0)) }.unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     while unsafe { IsWindow(popup) }.as_bool() {
         assert!(Instant::now() < deadline, "right-click popup did not close");
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn assert_keyboard_submenus(mut popup: HWND, thread: u32) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetMenuItemCount, GetMenuState, GetMenuStringW, GetSubMenu, HMENU, MF_BYPOSITION,
+        MF_HILITE, WM_KEYDOWN,
+    };
+
+    fn popup_menu(popup: HWND) -> HMENU {
+        let mut result = 0;
+        assert_ne!(
+            unsafe {
+                SendMessageTimeoutW(
+                    popup,
+                    0x01E1,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    2000,
+                    Some(&mut result),
+                )
+            }
+            .0,
+            0
+        );
+        HMENU(result as *mut _)
+    }
+
+    fn selected(menu: HMENU) -> Option<u32> {
+        (0..unsafe { GetMenuItemCount(menu) } as u32)
+            .find(|index| unsafe { GetMenuState(menu, *index, MF_BYPOSITION) & MF_HILITE.0 != 0 })
+    }
+
+    fn press_key(popup: HWND, key: usize) {
+        unsafe {
+            PostMessageW(popup, WM_KEYDOWN, WPARAM(key), LPARAM(1)).unwrap();
+            PostMessageW(
+                popup,
+                windows::Win32::UI::WindowsAndMessaging::WM_KEYUP,
+                WPARAM(key),
+                LPARAM(0xC0000001_u32 as isize),
+            )
+            .unwrap();
+        }
+    }
+
+    // Native menus may start without a selection, or with a mouse-hover selection.
+    // Wait for each arrow key to change the actual highlighted item before proceeding.
+    // Messages stay within this app; no desktop keyboard input or settings changes.
+    for label in ["Appearance", "Layout"] {
+        let menu = popup_menu(popup);
+        let target = (0..unsafe { GetMenuItemCount(menu) } as u32)
+            .find(|index| {
+                let mut text = [0_u16; 256];
+                let count = unsafe { GetMenuStringW(menu, *index, Some(&mut text), MF_BYPOSITION) };
+                String::from_utf16_lossy(&text[..count as usize]) == label
+            })
+            .unwrap();
+        for _ in 0..unsafe { GetMenuItemCount(menu) } {
+            let before = selected(menu);
+            if before == Some(target) {
+                break;
+            }
+            press_key(popup, 0x28);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while selected(menu) == before {
+                assert!(
+                    Instant::now() < deadline,
+                    "Down did not move the menu selection toward {label}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert_eq!(selected(menu), Some(target), "could not select {label}");
+        let submenu = unsafe { GetSubMenu(menu, target as i32) };
+        press_key(popup, 0x27);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let class = wide("#32768");
+        popup = loop {
+            let mut after = HWND::default();
+            let mut found = None;
+            while let Ok(hwnd) = unsafe {
+                FindWindowExW(
+                    HWND::default(),
+                    after,
+                    PCWSTR(class.as_ptr()),
+                    PCWSTR::null(),
+                )
+            } {
+                if unsafe { GetWindowThreadProcessId(hwnd, None) } == thread
+                    && unsafe { IsWindowVisible(hwnd) }.as_bool()
+                    && popup_menu(hwnd) == submenu
+                {
+                    found = Some(hwnd);
+                    break;
+                }
+                after = hwnd;
+            }
+            if let Some(hwnd) = found {
+                break hwnd;
+            }
+            assert!(Instant::now() < deadline, "Right did not open {label}");
+            std::thread::sleep(Duration::from_millis(10));
+        };
     }
 }
 
@@ -339,6 +548,11 @@ fn widget_embeds_in_taskbar_with_automatic_placement() {
     responsive(widget, WM_NULL);
     let class = wide("NetSpeedWidgetController");
     let controller = unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) }.unwrap();
+    assert_ne!(
+        unsafe { GetWindowLongW(controller, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST.0,
+        0,
+        "the hidden menu owner must keep settings above the taskbar"
+    );
     let capture = unsafe { GetCapture() };
     responsive(widget, WM_LBUTTONDOWN);
     assert_eq!(
@@ -447,15 +661,43 @@ fn widget_embeds_in_taskbar_with_automatic_placement() {
         let mut taskbar_rect = RECT::default();
         unsafe { GetWindowRect(shell, &mut taskbar_rect) }.unwrap();
         assert_eq!(
-            rect.top, taskbar_rect.top,
-            "widget must meet the top of the taskbar"
+            rect.top,
+            taskbar_rect.top + 1,
+            "widget must leave the taskbar's top separator uncovered"
         );
         assert_eq!(
             rect.bottom, taskbar_rect.bottom,
             "widget must meet the bottom of the taskbar"
         );
     }
-    popup_stays_in_front_of_widget(widget, controller);
+    popup_stays_in_front_of_widget(
+        widget,
+        controller,
+        widget,
+        WM_RBUTTONUP,
+        WPARAM(0),
+        LPARAM(0),
+    );
+    // Exercise the tray's right-click callback without clicking the system tray.
+    popup_stays_in_front_of_widget(
+        widget,
+        controller,
+        controller,
+        windows::Win32::UI::WindowsAndMessaging::WM_USER + 20,
+        WPARAM(0),
+        LPARAM(WM_RBUTTONUP as isize),
+    );
+    command(controller, CMD_DETAILS);
+    let details = unsafe { FindWindowW(PCWSTR(details_class.as_ptr()), PCWSTR::null()) }.unwrap();
+    // The Network details Settings button uses native control ID 2.
+    popup_stays_in_front_of_widget(
+        widget,
+        controller,
+        details,
+        WM_COMMAND,
+        WPARAM(2),
+        LPARAM(0),
+    );
     responsive(controller, WM_NULL);
     // Visibility repairs must never undo an explicit manual hide.
     responsive(controller, WM_HOTKEY);

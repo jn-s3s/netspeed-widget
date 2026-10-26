@@ -6,9 +6,9 @@ use windows::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetParent, GetWindowLongW, GetWindowRect,
-    IsWindow, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CHILD, WS_CLIPSIBLINGS, WS_POPUP,
+    EnumChildWindows, EnumWindows, FindWindowW, GetClassNameW, GetParent, GetWindowLongW,
+    GetWindowRect, IsWindow, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CHILD, WS_CLIPSIBLINGS, WS_POPUP,
 };
 
 /// Attach only our own window; Explorer's styles and layout remain untouched.
@@ -95,6 +95,25 @@ pub fn find_taskbars() -> Vec<TaskbarWindow> {
             LPARAM(&mut taskbars as *mut Vec<TaskbarWindow> as isize),
         );
     }
+    // Customized Explorer shells can omit the primary taskbar from EnumWindows
+    // while it remains available by class lookup, just like embedded widgets.
+    if !taskbars.iter().any(|bar| bar.is_primary) {
+        // SAFETY: Static class string and a null title; no pointers are retained.
+        if let Ok(hwnd) = unsafe {
+            FindWindowW(
+                windows::core::w!("Shell_TrayWnd"),
+                windows::core::PCWSTR::null(),
+            )
+        } {
+            if let Some(rect) = taskbar_rect(hwnd) {
+                taskbars.push(TaskbarWindow {
+                    hwnd,
+                    rect,
+                    is_primary: true,
+                });
+            }
+        }
+    }
     taskbars.sort_by_key(|taskbar| {
         (
             taskbar.rect.top,
@@ -135,6 +154,12 @@ pub fn window_rect(hwnd: HWND) -> Option<RECT> {
 pub fn taskbar_rect(hwnd: HWND) -> Option<RECT> {
     // GetWindowRect does not synchronously message Explorer, unlike the appbar API.
     window_rect(hwnd)
+}
+
+/// Leave Explorer's top separator uncovered by one physical pixel at every DPI.
+pub(crate) fn widget_rect(bar: RECT) -> Option<RECT> {
+    let top = bar.top.checked_add(1)?;
+    (top < bar.bottom).then_some(RECT { top, ..bar })
 }
 
 /// The state a descendant search carries.
@@ -220,4 +245,41 @@ pub fn monitor_device(taskbar: &TaskbarWindow) -> Option<String> {
 /// Whether a window still exists.
 pub fn is_window(hwnd: HWND) -> bool {
     unsafe { IsWindow(hwnd).as_bool() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widget_bounds_preserve_one_physical_pixel_and_the_bottom_edge() {
+        // Physical heights representative of several DPI settings and monitors.
+        for (top, height) in [(1000, 48), (1000, 60), (-1440, 72), (-2160, 96), (0, 2)] {
+            let bar = RECT {
+                left: -1920,
+                top,
+                right: 0,
+                bottom: top + height,
+            };
+            let widget = widget_rect(bar).expect("room below the separator");
+            assert_eq!(widget.top, bar.top + 1);
+            assert_eq!(widget.bottom, bar.bottom);
+            assert_eq!(widget.left, bar.left);
+            assert_eq!(widget.right, bar.right);
+            assert_eq!(widget.bottom - widget.top, height - 1);
+        }
+    }
+
+    #[test]
+    fn widget_bounds_reject_taskbars_without_room_below_the_separator() {
+        for (top, bottom) in [(0, 1), (0, 0), (1, 0), (i32::MAX, i32::MAX)] {
+            assert!(widget_rect(RECT {
+                left: 0,
+                top,
+                right: 1920,
+                bottom,
+            })
+            .is_none());
+        }
+    }
 }
