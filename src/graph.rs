@@ -83,42 +83,50 @@ impl TrafficGraph {
                 None => (sample.down_mbps, sample.up_mbps, sample.ts),
             });
         }
-        let mut previous: Option<(f32, f64, f64, f64)> = None;
+        let mut points = Vec::with_capacity(buckets.len());
         for (index, bucket) in buckets.into_iter().enumerate() {
             let Some((down, up, ts)) = bucket else {
                 continue;
             };
             let x = (slot.x + index as f32).min(slot.right());
-            if let Some((last_x, last_down, last_up, last_ts)) = previous {
-                if ts - last_ts <= 2.5 {
-                    if fill {
-                        canvas.fill_polygon(
-                            &[
-                                (last_x, slot.bottom()),
-                                (last_x, to_y(last_down)),
-                                (x, to_y(down)),
-                                (x, slot.bottom()),
-                            ],
-                            palette.down.with_alpha(FILL_OPACITY),
-                        );
-                    }
-                    canvas.stroke_polyline(
-                        &[(last_x, to_y(last_down)), (x, to_y(down))],
-                        1.25 * dpi_scale,
-                        palette.down,
-                    );
-                    let monochrome = (palette.down.r, palette.down.g, palette.down.b)
-                        == (palette.up.r, palette.up.g, palette.up.b);
-                    if !monochrome || index % 4 < 2 {
-                        canvas.stroke_polyline(
-                            &[(last_x, to_y(last_up)), (x, to_y(up))],
-                            dpi_scale,
-                            palette.up,
-                        );
+            points.push((index, (x, to_y(down)), (x, to_y(up)), ts));
+        }
+        let monochrome = (palette.down.r, palette.down.g, palette.down.b)
+            == (palette.up.r, palette.up.g, palette.up.b);
+        let mut start = 0;
+        for end in 1..=points.len() {
+            if end < points.len() && points[end].3 - points[end - 1].3 <= 2.5 {
+                continue;
+            }
+            let run = &points[start..end];
+            start = end;
+            if run.len() < 2 {
+                continue;
+            }
+            // Composite each connected path once. Separately blending round caps
+            // at every sample makes their partially covered joins visibly heavier.
+            let down: Vec<_> = run.iter().map(|point| point.1).collect();
+            let up: Vec<_> = run.iter().map(|point| point.2).collect();
+            if fill {
+                let mut area = Vec::with_capacity(down.len() + 2);
+                area.push((down[0].0, slot.bottom()));
+                area.extend_from_slice(&down);
+                area.push((down[down.len() - 1].0, slot.bottom()));
+                canvas.fill_polygon(&area, palette.down.with_alpha(FILL_OPACITY));
+            }
+            canvas.stroke_polyline(&down, 1.25 * dpi_scale, palette.down);
+            if monochrome {
+                let mut dash_start = 0;
+                for (end, point) in run.iter().enumerate().skip(1) {
+                    if point.0 % 4 >= 2 {
+                        canvas.stroke_polyline(&up[dash_start..end], dpi_scale, palette.up);
+                        dash_start = end;
                     }
                 }
+                canvas.stroke_polyline(&up[dash_start..], dpi_scale, palette.up);
+            } else {
+                canvas.stroke_polyline(&up, dpi_scale, palette.up);
             }
-            previous = Some((x, down, up, ts));
         }
     }
 }
@@ -126,6 +134,55 @@ impl TrafficGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn steady_samples() -> Vec<NetSample> {
+        let now = crate::now_epoch();
+        (0..60)
+            .map(|index| NetSample {
+                ts: now - 59.0 + index as f64,
+                down_mbps: 10.0,
+                up_mbps: 0.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn steady_line_has_uniform_coverage_including_sample_joins() {
+        let mut palette = crate::theme::palette_for("Default");
+        palette.down.a = 0.5;
+        let mut canvas = Canvas::new(44, 26);
+        TrafficGraph::new().draw(
+            &mut canvas,
+            Rect::new(0.0, 0.0, 44.0, 26.0),
+            &steady_samples(),
+            &palette,
+            false,
+            1.0,
+        );
+        let alpha = |x: usize| canvas.pixels()[(44 + x) * 4 + 3];
+        assert!(alpha(4) > 0);
+        for x in 4..40 {
+            assert_eq!(alpha(x), alpha(4), "uneven coverage at column {x}");
+        }
+    }
+
+    #[test]
+    fn monochrome_upload_keeps_visible_dash_gaps() {
+        let mut palette = crate::theme::palette_for("Default");
+        palette.up = palette.down;
+        let mut canvas = Canvas::new(120, 26);
+        TrafficGraph::new().draw(
+            &mut canvas,
+            Rect::new(0.0, 0.0, 120.0, 26.0),
+            &steady_samples(),
+            &palette,
+            false,
+            1.0,
+        );
+        let row = &canvas.pixels()[25 * 120 * 4..26 * 120 * 4];
+        assert!(row.as_chunks::<4>().0.iter().any(|p| p[3] == 0));
+        assert!(row.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
+    }
 
     #[test]
     fn fill_toggle_visibly_shades_active_downloads_but_not_idle_traffic() {

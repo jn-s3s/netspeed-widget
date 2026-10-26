@@ -8,6 +8,8 @@
 //! Premultiplied channels allow source-over compositing without unpremultiplying
 //! the destination for each pixel.
 
+use std::rc::Rc;
+
 /// A straight (non-premultiplied) colour with an alpha channel.
 #[derive(Clone, Copy, Debug)]
 pub struct Color {
@@ -56,7 +58,17 @@ impl Color {
     }
 }
 
-/// Draws text into coverage masks. Implemented by the GDI font wrapper.
+/// A cached grayscale coverage mask, including its offset from the layout origin.
+#[derive(Clone, Default)]
+pub struct CoverageMask {
+    pub pixels: Rc<[u8]>,
+    pub width: i32,
+    pub height: i32,
+    pub offset_x: i32,
+    pub offset_y: i32,
+}
+
+/// Draws text into coverage masks using backend-matched measurements.
 pub trait TextRenderer {
     /// Width of the text in pixels.
     fn measure(&self, text: &str) -> f32;
@@ -65,7 +77,7 @@ pub trait TextRenderer {
     ///
     /// The mask is the glyph shape flattened into an alpha channel, so the
     /// widget can paint it in any colour.
-    fn mask(&self, text: &str) -> (Vec<u8>, i32, i32);
+    fn mask(&self, text: &str) -> CoverageMask;
 }
 
 /// An RGBA drawing surface.
@@ -136,6 +148,9 @@ impl Canvas {
     ///
     /// The signed distance to the shape determines edge coverage for both fill and outline.
     fn paint_rounded_rect(&mut self, rect: Rect, radius: f32, stroke: f32, color: Color) {
+        if color.a <= 0.0 {
+            return;
+        }
         let radius = radius.max(0.0).min(rect.width * 0.5).min(rect.height * 0.5);
         let cx = rect.x + rect.width * 0.5;
         let cy = rect.y + rect.height * 0.5;
@@ -290,18 +305,22 @@ impl Canvas {
         if text.is_empty() {
             return 0.0;
         }
-        let (mask, mask_w, mask_h) = renderer.mask(text);
-        let left = x.round() as i32;
-        let top = y.round() as i32;
-        for my in 0..mask_h {
-            for mx in 0..mask_w {
-                let coverage = mask[(my * mask_w + mx) as usize] as f32 / 255.0;
+        self.draw_mask(x, y, &renderer.mask(text), color);
+        renderer.measure(text)
+    }
+
+    /// Blends a reusable mask without copying its coverage bytes.
+    pub fn draw_mask(&mut self, x: f32, y: f32, mask: &CoverageMask, color: Color) {
+        let left = x.round() as i32 + mask.offset_x;
+        let top = y.round() as i32 + mask.offset_y;
+        for my in 0..mask.height {
+            for mx in 0..mask.width {
+                let coverage = mask.pixels[(my * mask.width + mx) as usize] as f32 / 255.0;
                 if coverage > 0.0 {
                     self.blend(left + mx, top + my, color, coverage);
                 }
             }
         }
-        renderer.measure(text)
     }
 }
 
@@ -393,6 +412,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mask_padding_keeps_the_layout_origin_and_clips_at_canvas_edges() {
+        let mut canvas = Canvas::new(2, 2);
+        let mask = CoverageMask {
+            pixels: vec![0, 0, 0, 0, 0, 255, 128, 0, 0, 64, 32, 0, 0, 0, 0, 0].into(),
+            width: 4,
+            height: 4,
+            offset_x: -1,
+            offset_y: -1,
+        };
+        canvas.draw_mask(0.0, 0.0, &mask, Color::rgb(255, 255, 255));
+        assert_eq!(
+            canvas
+                .pixels()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[3])
+                .collect::<Vec<_>>(),
+            [255, 128, 64, 32]
+        );
+    }
+
+    #[test]
+    fn connected_stroke_does_not_darken_shared_joins() {
+        let points = [(2.5, 3.5), (6.5, 3.5), (10.5, 3.5)];
+        let mut canvas = Canvas::new(14, 8);
+        canvas.stroke_polyline(&points, 1.0, Color::rgba(255, 255, 255, 0.5));
+        let center = |x: usize| canvas.pixels()[(3 * 14 + x) * 4 + 3];
+        assert_eq!(center(4), center(6));
+        assert_eq!(center(6), 128);
+    }
+
+    #[test]
     fn hex_colors_reject_non_ascii_without_panicking() {
         for text in ["€€", "a€bc", "", "12345", "zzzzzz"] {
             let color = Color::from_hex(text);
@@ -442,8 +494,14 @@ mod tests {
             10.0
         }
 
-        fn mask(&self, _text: &str) -> (Vec<u8>, i32, i32) {
-            (vec![255; 4], 2, 2)
+        fn mask(&self, _text: &str) -> CoverageMask {
+            CoverageMask {
+                pixels: vec![255; 4].into(),
+                width: 2,
+                height: 2,
+                offset_x: 0,
+                offset_y: 0,
+            }
         }
     }
 

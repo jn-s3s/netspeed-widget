@@ -1,6 +1,6 @@
 //! DPI-scaled, stable-column taskbar readouts. Historical data belongs in details.
 
-use crate::canvas::{Canvas, Color, Rect, TextRenderer};
+use crate::canvas::{Canvas, Color, CoverageMask, Rect, TextRenderer};
 use crate::config::DisplayLayout;
 use crate::format::RateText;
 use crate::graph::TrafficGraph;
@@ -17,6 +17,8 @@ pub struct Fonts {
     value_right: f32,
     rate_width: f32,
     status_width: f32,
+    down_arrow: CoverageMask,
+    up_arrow: CoverageMask,
 }
 
 impl Fonts {
@@ -48,7 +50,8 @@ impl Fonts {
                     .sum::<f32>()
             })
             .fold(0.0_f32, f32::max);
-        let value_right = value.measure("↓").max(value.measure("↑")) + 6.0 * scale + number_width;
+        let arrow_width = (7.0 * scale).ceil();
+        let value_right = arrow_width + 6.0 * scale + number_width;
         let unit_width = [
             "Kbps", "Mbps", "Gbps", "Tbps", "kB/s", "MB/s", "GB/s", "TB/s",
         ]
@@ -64,6 +67,8 @@ impl Fonts {
             status_width = status_width.max(value.measure(&format!("{ms} ms")));
         }
         Some(Self {
+            down_arrow: arrow_mask(scale, value.line_height(), false),
+            up_arrow: arrow_mask(scale, value.line_height(), true),
             value,
             unit,
             scale,
@@ -72,6 +77,50 @@ impl Fonts {
             rate_width: value_right + 5.0 * scale + unit_width,
             status_width,
         })
+    }
+}
+
+/// Rasterize once per DPI/font change, not once per paint. A single silhouette
+/// avoids darker overlap between the arrowhead and shaft on translucent themes.
+fn arrow_mask(scale: f32, line_height: i32, up: bool) -> CoverageMask {
+    let width = (7.0 * scale).ceil() as i32 + 2;
+    let height = line_height + 2;
+    let mut canvas = Canvas::new(width, height);
+    let stem = scale.round().max(1.0);
+    let cx = (width as f32 * 0.5 - stem * 0.5).round() + stem * 0.5;
+    let head = (3.5 * scale).min(cx - 1.0).min(width as f32 - 1.0 - cx);
+    let top = 1.0 + ((line_height as f32 - 10.0 * scale) * 0.5).round();
+    let bottom = top + 10.0 * scale;
+    let half = stem * 0.5;
+    let mut points = [
+        (cx - half, top),
+        (cx + half, top),
+        (cx + half, bottom - 3.0 * scale),
+        (cx + 2.5 * scale, bottom - 5.0 * scale),
+        (cx + head, bottom - 4.0 * scale),
+        (cx, bottom),
+        (cx - head, bottom - 4.0 * scale),
+        (cx - 2.5 * scale, bottom - 5.0 * scale),
+        (cx - half, bottom - 3.0 * scale),
+    ];
+    if up {
+        for (_, y) in &mut points {
+            *y = top + bottom - *y;
+        }
+    }
+    canvas.fill_polygon(&points, Color::rgb(255, 255, 255));
+    CoverageMask {
+        pixels: canvas
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3])
+            .collect(),
+        width,
+        height,
+        offset_x: -1,
+        offset_y: -1,
     }
 }
 
@@ -126,7 +175,7 @@ pub fn paint(
     canvas.fill_rounded_rect(Rect::new(0.0, 0.0, width, height), 0.0, palette.surface);
     // Clip both horizontal borders so the surface fills the taskbar's usable height.
     canvas.stroke_rounded_rect(
-        Rect::new(0.5, -1.5, width - 1.0, height + 3.0),
+        Rect::new(0.0, -2.0, width, height + 4.0),
         0.0,
         1.0,
         palette.border,
@@ -146,7 +195,7 @@ pub fn paint(
         canvas,
         fonts,
         (8.0 * s, top),
-        "↓",
+        &fonts.down_arrow,
         view.down,
         text_palette.down,
         &text_palette,
@@ -162,7 +211,7 @@ pub fn paint(
             },
             if single { top } else { top + line + 2.0 * s },
         ),
-        "↑",
+        &fonts.up_arrow,
         view.up,
         text_palette.up,
         &text_palette,
@@ -216,13 +265,13 @@ fn draw_rate(
     canvas: &mut Canvas,
     fonts: &Fonts,
     (x, y): (f32, f32),
-    arrow: &str,
+    arrow: &CoverageMask,
     rate: &RateText,
     accent: Color,
     palette: &Palette,
 ) {
     let s = fonts.scale;
-    canvas.draw_text(x, y, arrow, &fonts.value, accent);
+    canvas.draw_mask(x, y, arrow, accent);
     // Give every digit its own equal-width cell, even with a proportional font.
     let cell = fonts.digit_cell;
     let right = x + fonts.value_right;
@@ -258,6 +307,81 @@ fn draw_rate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vector_arrows_have_smooth_edges_and_fit_their_reserved_column() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        for dpi in [96, 120, 144, 192] {
+            let fonts = Fonts::for_dpi(dpi, false, dpi as i32 / 2).unwrap();
+            for mask in [&fonts.down_arrow, &fonts.up_arrow] {
+                assert!(mask.pixels.contains(&255));
+                assert!(mask.pixels.iter().any(|&p| p > 0 && p < 255));
+                assert_eq!(mask.pixels.len(), (mask.width * mask.height) as usize);
+                for row in mask.pixels.chunks_exact(mask.width as usize) {
+                    assert_eq!(row[0], 0);
+                    assert_eq!(row[row.len() - 1], 0);
+                }
+                assert_eq!(mask.height, fonts.value.line_height() + 2);
+            }
+        }
+    }
+
+    /// Manual microbenchmark: excludes window presentation and network sampling.
+    #[test]
+    #[ignore = "manual release-build rendering benchmark"]
+    fn rendering_benchmark() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        for dpi in [96, 120, 144, 192] {
+            let height = dpi as i32 / 2;
+            let fonts = Fonts::for_dpi(dpi, false, height).unwrap();
+            let rate = RateText {
+                value: "9.99".into(),
+                unit: "Mbps",
+            };
+            let now = crate::now_epoch();
+            let samples: Vec<_> = (0..60)
+                .map(|i| NetSample {
+                    ts: now - (59 - i) as f64,
+                    down_mbps: (i % 11) as f64,
+                    up_mbps: (i % 7) as f64,
+                })
+                .collect();
+            for active in [false, true] {
+                let view = WidgetView {
+                    down: &rate,
+                    up: &rate,
+                    status: DisplayState::Healthy(8.0),
+                    failure_intensity: 0.0,
+                    samples: if active { &samples } else { &[] },
+                    layout: DisplayLayout::Balanced,
+                    show_graph: true,
+                    graph_fill: true,
+                };
+                let palette = crate::theme::palette_for("Default");
+                let width = widget_width(view.layout, true, &fonts);
+                let mut graph = TrafficGraph::new();
+                let mut render = || {
+                    let mut canvas = Canvas::new(width, height);
+                    paint(&mut canvas, &fonts, &view, &palette, &mut graph);
+                    std::hint::black_box(canvas);
+                };
+                render(); // Warm font masks before measuring steady-state work.
+                let mut timings = Vec::new();
+                for _ in 0..5 {
+                    let start = std::time::Instant::now();
+                    for _ in 0..500 {
+                        render();
+                    }
+                    timings.push(start.elapsed().as_secs_f64() * 1_000_000.0 / 500.0);
+                }
+                timings.sort_by(f64::total_cmp);
+                println!(
+                    "{dpi} DPI, active={active}: {:.2} us/paint (median)",
+                    timings[2]
+                );
+            }
+        }
+    }
 
     #[test]
     fn alert_text_is_uniform_and_status_fits_at_every_supported_scale() {
@@ -384,6 +508,13 @@ mod tests {
                     &expected.pixels()[8..(width as usize - 2) * 4],
                     "edge row {row} must contain only the surface at {dpi} DPI"
                 );
+                for x in [0, width - 1] {
+                    let edge = ((row * width + x) * 4) as usize;
+                    let mut border = Canvas::new(1, 1);
+                    border.blend(0, 0, palette.surface, 1.0);
+                    border.blend(0, 0, palette.border, 1.0);
+                    assert_eq!(&canvas.pixels()[edge..edge + 4], border.pixels());
+                }
             }
         }
     }
