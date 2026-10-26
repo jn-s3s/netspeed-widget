@@ -32,6 +32,26 @@ verify taskbar parenting, input, popup stacking, recovery or shutdown. Run
 `cargo test --locked --test windows_lifecycle -- --show-output` on a desktop
 before accepting changes to these behaviors.
 
+## Rendering checks
+
+Check the widget at 100%, 125%, 150% and 200% display scaling, including moving it
+between monitors. Compare native-resolution captures in each layout with Default,
+Dark and Light themes, graph fill on/off, and healthy/slow/failed status. Check
+small units, arrows, one-pixel side borders, graph joins and missing-data gaps.
+Also check text in the details panel and shortcut dialog. The transparent widget
+uses grayscale masks; opaque native controls follow system font smoothing.
+
+Run the manual paint benchmark in an optimized build:
+
+```powershell
+cargo test --release --locked --bin netspeed-widget rendering_benchmark -- --ignored --nocapture
+```
+
+It reports median paint time for warmed font caches, with empty and active graph
+history at four DPIs. It excludes window presentation, sampling and worker CPU;
+it is not an end-to-end CPU or memory benchmark. Compare on the same machine
+without other builds running. Keep refresh frequency unchanged when comparing.
+
 ## Visual Studio Code
 
 Open the repository folder and use **Extensions: Show Recommended Extensions**

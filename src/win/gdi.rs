@@ -13,15 +13,15 @@ use std::slice;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, POINT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GetDC,
-    GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA,
+    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush,
+    GetDC, GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA,
     AC_SRC_OVER, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
-    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS, DRAW_TEXT_FORMAT, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_TOP, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
+    CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DIB_RGB_COLORS, DRAW_TEXT_FORMAT,
+    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_TOP, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
-use crate::canvas::{Canvas, TextRenderer};
+use crate::canvas::{Canvas, CoverageMask, TextRenderer};
 
 /// `FW_NORMAL`.
 pub const WEIGHT_NORMAL: i32 = 400;
@@ -72,11 +72,9 @@ pub struct Font {
     hfont: windows::Win32::Graphics::Gdi::HFONT,
     hdc: windows::Win32::Graphics::Gdi::HDC,
     height: i32,
-    masks: RefCell<HashMap<String, GlyphMask>>,
+    masks: RefCell<HashMap<String, CoverageMask>>,
     advances: RefCell<HashMap<char, f32>>,
 }
-
-type GlyphMask = (Vec<u8>, i32, i32);
 
 impl Font {
     pub fn handle(&self) -> windows::Win32::Graphics::Gdi::HFONT {
@@ -96,8 +94,23 @@ impl Font {
     }
     /// Creates a font of the given family, pixel height and weight.
     pub fn new(family: &str, size_px: i32, weight: i32) -> Option<Self> {
+        Self::with_quality(family, size_px, weight, ANTIALIASED_QUALITY.0 as u32)
+    }
+
+    /// Creates a font for opaque native controls using the user's smoothing preference.
+    /// Do not use this font for transparent coverage masks: ClearType needs a known background.
+    pub fn native(family: &str, size_px: i32, weight: i32) -> Option<Self> {
+        Self::with_quality(family, size_px, weight, DEFAULT_QUALITY.0 as u32)
+    }
+
+    fn with_quality(family: &str, size_px: i32, weight: i32, quality: u32) -> Option<Self> {
+        // SAFETY: The terminated family name lives through creation. This font owns
+        // its DC and font handle; Drop destroys the DC before releasing the font.
         unsafe {
             let hdc = CreateCompatibleDC(HDC::default());
+            if hdc.is_invalid() {
+                return None;
+            }
             let wide = to_wide(family);
             let hfont = CreateFontW(
                 -size_px,
@@ -111,7 +124,7 @@ impl Font {
                 DEFAULT_CHARSET.0 as u32,
                 OUT_DEFAULT_PRECIS.0 as u32,
                 CLIP_DEFAULT_PRECIS.0 as u32,
-                ANTIALIASED_QUALITY.0 as u32,
+                quality,
                 0,
                 PCWSTR(wide.as_ptr()),
             );
@@ -120,7 +133,12 @@ impl Font {
                 return None;
             }
             let _ = SelectObject(hdc, HGDIOBJ(hfont.0));
-            let height = size_px;
+            let mut size = SIZE::default();
+            let height = if GetTextExtentPoint32W(hdc, &[b'0' as u16], &mut size).as_bool() {
+                size.cy.max(size_px)
+            } else {
+                size_px
+            };
             Some(Self {
                 hfont,
                 hdc,
@@ -133,15 +151,7 @@ impl Font {
 
     /// The line height the font reports for a sample of text.
     pub fn line_height(&self) -> i32 {
-        unsafe {
-            let wide = to_wide("0");
-            let mut size = SIZE::default();
-            if GetTextExtentPoint32W(self.hdc, &wide[..wide.len() - 1], &mut size).as_bool() {
-                size.cy.max(self.height)
-            } else {
-                self.height
-            }
-        }
+        self.height
     }
 }
 
@@ -182,24 +192,32 @@ impl TextRenderer for Font {
         }
     }
 
-    fn mask(&self, text: &str) -> (Vec<u8>, i32, i32) {
+    fn mask(&self, text: &str) -> CoverageMask {
         if text.is_empty() {
-            return (Vec::new(), 0, 0);
+            return CoverageMask::default();
         }
         if let Some(mask) = self.masks.borrow().get(text) {
             return mask.clone();
         }
+        // SAFETY: This call owns the temporary DC and DIB. The bitmap allocation
+        // covers width * height BGRA pixels. GdiFlush completes writes before CPU
+        // reads, and destroying the DC deselects its objects before DIB deletion.
         unsafe {
             let mut wide = to_wide(text);
             let text_len = wide.len() - 1;
             let mut size = SIZE::default();
-            let _ = GetTextExtentPoint32W(self.hdc, &wide[..text_len], &mut size);
+            if !GetTextExtentPoint32W(self.hdc, &wide[..text_len], &mut size).as_bool() {
+                return CoverageMask::default();
+            }
             // One pixel of slack on every side keeps antialiased glyph edges
             // from being clipped by the measured box.
             let width = (size.cx + 2).max(1);
             let height = (size.cy + 2).max(1);
 
             let mem_dc = CreateCompatibleDC(HDC::default());
+            if mem_dc.is_invalid() {
+                return CoverageMask::default();
+            }
             // The face has to be selected into this device context too, or
             // the text is drawn with the default system font and clipped to
             // a box that was measured for a different one.
@@ -228,7 +246,7 @@ impl TextRenderer for Font {
                 Ok(dib) => dib,
                 Err(_) => {
                     let _ = DeleteDC(mem_dc);
-                    return (Vec::new(), 0, 0);
+                    return CoverageMask::default();
                 }
             };
             let _ = SelectObject(mem_dc, HGDIOBJ(dib.0));
@@ -245,17 +263,25 @@ impl TextRenderer for Font {
             let _ = SetBkMode(mem_dc, TRANSPARENT);
             let _ = SetTextColor(mem_dc, COLORREF(0x00FF_FFFF));
             let mut rect = windows::Win32::Foundation::RECT {
-                left: 0,
-                top: 0,
+                left: 1,
+                top: 1,
                 right: width,
                 bottom: height,
             };
-            let _ = DrawTextW(
+            let drawn = DrawTextW(
                 mem_dc,
                 &mut wide[..text_len],
                 &mut rect,
                 DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_TOP.0 | DT_SINGLELINE.0 | DT_NOPREFIX.0),
             );
+
+            // DIB memory cannot be read until this thread's batched GDI writes finish.
+            let flushed = GdiFlush().as_bool();
+            if drawn == 0 || !flushed {
+                let _ = DeleteDC(mem_dc);
+                let _ = DeleteObject(HGDIOBJ(dib.0));
+                return CoverageMask::default();
+            }
 
             let raw = slice::from_raw_parts(bits as *const u8, (width * height * 4) as usize);
             let mut mask = vec![0u8; (width * height) as usize];
@@ -268,7 +294,13 @@ impl TextRenderer for Font {
 
             let _ = DeleteDC(mem_dc);
             let _ = DeleteObject(HGDIOBJ(dib.0));
-            let result = (mask, width, height);
+            let result = CoverageMask {
+                pixels: mask.into(),
+                width,
+                height,
+                offset_x: -1,
+                offset_y: -1,
+            };
             let mut cache = self.masks.borrow_mut();
             if cache.len() >= 64 {
                 cache.clear();
@@ -381,6 +413,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn small_text_masks_have_grayscale_edges_and_share_cached_pixels() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        for dpi in [96, 120, 144, 192] {
+            for logical_size in [11, 13] {
+                let font = Font::new("Segoe UI", logical_size * dpi / 96, WEIGHT_NORMAL).unwrap();
+                let first = font.mask("08.9 ms");
+                let second = font.mask("08.9 ms");
+                assert!(std::rc::Rc::ptr_eq(&first.pixels, &second.pixels));
+                assert!(first.pixels.contains(&255));
+                assert!(
+                    first
+                        .pixels
+                        .iter()
+                        .any(|&coverage| coverage > 0 && coverage < 255),
+                    "small text needs grayscale edges at {dpi} DPI / {logical_size}px"
+                );
+                assert_eq!((first.offset_x, first.offset_y), (-1, -1));
+                assert!(first.pixels[..first.width as usize].iter().all(|&p| p == 0));
+                assert_eq!(first.pixels.len(), (first.width * first.height) as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn text_mask_cache_is_bounded() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        let font = Font::new("Segoe UI", 13, WEIGHT_NORMAL).unwrap();
+        for ms in 0..200 {
+            let mask = font.mask(&format!("{ms} ms"));
+            assert!(mask.pixels.iter().any(|&p| p > 0));
+            assert!(font.masks.borrow().len() <= 64);
+        }
+    }
+
+    #[test]
     fn character_advances_are_cached_per_font() {
         let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
         let font = Font::new("Segoe UI", 12, WEIGHT_NORMAL).unwrap();
@@ -412,8 +479,8 @@ mod tests {
         let before = unsafe { GetGuiResources(process, 0) };
         for _ in 0..200 {
             let font = Font::new("Segoe UI", 12, WEIGHT_NORMAL).unwrap();
-            let (mask, width, height) = font.mask("123.4 Mb/s");
-            assert_eq!(mask.len(), (width * height) as usize);
+            let mask = font.mask("123.4 Mb/s");
+            assert_eq!(mask.pixels.len(), (mask.width * mask.height) as usize);
         }
         let after = unsafe { GetGuiResources(process, 0) };
         // Allow a little slack for other tests initializing Windows resources.

@@ -39,6 +39,7 @@ struct PanelState {
     owner: HWND,
     font: Option<Font>,
     title_font: Option<Font>,
+    control_font: Option<Font>,
     scale: f32,
     run_command: u32,
     settings_command: u32,
@@ -173,6 +174,7 @@ pub fn toggle(
         owner,
         font: Font::new("Segoe UI", (12.0 * scale).round() as i32, 400),
         title_font: Font::new("Segoe UI", (14.0 * scale).round() as i32, 600),
+        control_font: Font::native("Segoe UI", (12.0 * scale).round() as i32, 400),
         scale,
         run_command,
         settings_command,
@@ -268,7 +270,7 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
         )
     }
     .unwrap_or_default();
-    if let Some(font) = &state.font {
+    if let Some(font) = &state.control_font {
         font.apply_to(state.body);
     }
     for (index, label) in ["&Run speedtest", "&Settings", "&Close"].iter().enumerate() {
@@ -292,7 +294,7 @@ unsafe fn build_controls(hwnd: HWND, state: &mut PanelState) {
                 None,
             )
         } {
-            if let Some(font) = &state.font {
+            if let Some(font) = &state.control_font {
                 font.apply_to(button);
             }
         }
