@@ -107,9 +107,12 @@ pub fn speedtest_label(summary: &str) -> String {
 /// Hotkey action label matching the registration state.
 pub fn hotkey_label(ok: bool, combo: &str) -> String {
     if ok {
-        format!("Change hotkey ({})", crate::hotkey::format_hotkey(combo))
+        format!(
+            "Change visibility shortcut… ({})",
+            crate::hotkey::format_hotkey(combo)
+        )
     } else {
-        "Set hotkey (none active)".to_string()
+        "Change visibility shortcut… (none active)".to_string()
     }
 }
 

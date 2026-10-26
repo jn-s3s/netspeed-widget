@@ -124,8 +124,9 @@ pub fn paint(
     let width = canvas.width() as f32;
     let height = canvas.height() as f32;
     canvas.fill_rounded_rect(Rect::new(0.0, 0.0, width, height), 0.0, palette.surface);
+    // Clip both horizontal borders so the surface fills the taskbar's usable height.
     canvas.stroke_rounded_rect(
-        Rect::new(0.5, 0.5, width - 1.0, height - 1.0),
+        Rect::new(0.5, -1.5, width - 1.0, height + 3.0),
         0.0,
         1.0,
         palette.border,
@@ -337,6 +338,54 @@ mod tests {
             effective_layout(DisplayLayout::Balanced, 48, 192),
             DisplayLayout::SingleLine
         );
+    }
+
+    #[test]
+    fn background_fills_top_and_bottom_without_horizontal_borders() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        for dpi in [96, 120, 144, 192] {
+            let height = dpi as i32 / 2 - 1;
+            let fonts = Fonts::for_dpi(dpi, false, height).unwrap();
+            let width = widget_width(DisplayLayout::Balanced, false, &fonts);
+            let mut canvas = Canvas::new(width, height);
+            let palette = crate::theme::palette_for("Dark");
+            let rate = RateText {
+                value: "0".to_string(),
+                unit: "B/s",
+            };
+            paint(
+                &mut canvas,
+                &fonts,
+                &WidgetView {
+                    down: &rate,
+                    up: &rate,
+                    status: DisplayState::Healthy(8.0),
+                    failure_intensity: 0.0,
+                    samples: &[],
+                    layout: DisplayLayout::Balanced,
+                    show_graph: false,
+                    graph_fill: false,
+                },
+                &palette,
+                &mut TrafficGraph::new(),
+            );
+            let mut expected = Canvas::new(width, 1);
+            expected.fill_rounded_rect(
+                Rect::new(0.0, 0.0, width as f32, 1.0),
+                0.0,
+                palette.surface,
+            );
+            // Exclude the side borders and their antialiased inner edges.
+            for row in [0, height - 1] {
+                let start = (row * width + 2) as usize * 4;
+                let end = ((row + 1) * width - 2) as usize * 4;
+                assert_eq!(
+                    &canvas.pixels()[start..end],
+                    &expected.pixels()[8..(width as usize - 2) * 4],
+                    "edge row {row} must contain only the surface at {dpi} DPI"
+                );
+            }
+        }
     }
 
     #[test]

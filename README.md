@@ -24,17 +24,18 @@ cargo run --locked
 
 ## Controls
 
-- Choose automatic placement from the context menu; dragging is not supported.
+- Choose automatic placement under **Taskbar** in the context menu; dragging is not supported.
 - Hover for live traffic, probe details, session totals and the last speedtest.
 - Click to open or close Network details. The panel has a larger graph,
   Run speedtest, Settings and Close buttons; Tab navigates controls
   and Escape dismisses it. Clicking elsewhere dismisses the panel too.
 - Start a manual speedtest with Run speedtest in the Network details panel.
-- Right-click the widget or tray icon for themes, traffic graph,
-  layouts, units, placement, display selection,
-  hotkey, Start with Windows and quit. Network details is also available from the tray menu
-  when the widget has no room to appear.
-- Ctrl+Shift+Alt+N toggles visibility. Change the shortcut from the menu.
+- Right-click the widget or tray icon for **Network details**, **Show widget** and **Quit**.
+  **Appearance** groups layout, units, theme, background, graph and visual effects.
+  **Taskbar** contains placement and, when multiple taskbars are available, **Display**.
+  **Preferences** contains startup and the visibility shortcut. The Network details panel's
+  **Settings** button opens the same menu, including when the widget has no room to appear.
+- Ctrl+Shift+Alt+N toggles visibility. Change it under **Preferences → Change visibility shortcut…**.
 - Click the tray icon to show or hide the widget.
 
 Settings and the rolling log are stored in `%APPDATA%\NetSpeedWidget`.
@@ -42,12 +43,13 @@ Show/Hide controls your visibility preference; automatic placement can
 temporarily hide the widget when no safe space is available. The Default theme,
 listed as Follow Windows (transparent), adapts its foreground to the taskbar's
 light/dark setting and has no background or border, including on hover. An optional
-Subtle background improves separation. Other themes keep their colored
+**Appearance → Subtle background** improves separation. It is disabled for other themes,
+but retains its saved value. Other themes keep their colored
 backgrounds. Windows high-contrast colors override all presets.
 
 ## Start with Windows
 
-Enable **Start with Windows** in the widget or tray context menu to launch at
+Enable **Preferences → Start with Windows** in the widget or tray context menu to launch at
 sign-in for your Windows account. It is off by default and needs no administrator
 access, service or scheduled task. Startup uses normal launch behavior, including
 your saved Show widget preference (hide it to start tray-only).
@@ -76,7 +78,7 @@ lavender. Warnings turn all readout text amber; failed probes turn it red. Graph
 colors stay unchanged. Fonts, spacing and placement gaps scale with the selected
 taskbar's DPI.
 
-Choose a Layout from the context menu:
+Choose **Appearance → Layout** from the context menu:
 
 | Layout             | Contents                                      |
 | ------------------ | --------------------------------------------- |
@@ -94,12 +96,16 @@ Balanced to Compact before falling back to the tray. Density changes settle for
 two seconds; expansion also requires extra free-space margin. Numeric updates and
 hovering never change the widget's width.
 
-Animate errors is enabled by default and pulses failed-probe text between two
+**Appearance → Show traffic graph** requires Balanced and is disabled with an explanation
+when the selected layout or current taskbar size cannot show it. Its saved value is retained;
+the Network details graph remains available in every layout.
+
+**Appearance → Animate error indicator** is enabled by default and pulses failed-probe text between two
 opaque red shades. Turn it off for steady red text. The pulse also stops while
 the widget is hidden, when Windows animations are disabled, or in high contrast.
 High contrast uses the system text color for all readouts.
 
-Under Units, choose decimal bits (Kbps/Mbps/Gbps) or bytes (kB/s/MB/s/GB/s).
+Under **Appearance → Units**, choose decimal bits (Kbps/Mbps/Gbps) or bytes (kB/s/MB/s/GB/s).
 Prefixes adapt with hysteresis to avoid boundary flicker. Zero traffic is shown
 as `0`; a missing or stale sample is `—`. Very small
 nonzero readings use `<0.01` in the displayed unit.
@@ -139,7 +145,7 @@ remains available, and the widget returns automatically when space is available 
 
 Detection uses Windows accessibility information and visible taskbar child
 windows; third-party tools may not expose their occupied area reliably.
-Placement is automatic; use the context menu to choose a side and display.
+Placement is automatic; use **Taskbar** in the context menu to choose a side and display.
 
 The widget fills the taskbar height and uses square corners. Context menus open
 at the cursor using native positioning and stay in front of the widget.
