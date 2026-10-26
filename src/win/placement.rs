@@ -11,7 +11,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Accessibility::*;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetParent, IsChild, IsWindowVisible, PostMessageW, EVENT_OBJECT_CREATE,
+    FindWindowExW, GetParent, IsChild, IsWindowVisible, PostMessageW, EVENT_OBJECT_CREATE,
     EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_REORDER,
     EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
@@ -370,7 +370,12 @@ fn scan(automation: &IUIAutomation, request: Request) -> windows::core::Result<V
                 "Taskbar exposes no occupied controls",
             ));
         }
-        native_tools(bar, HWND(request.widget as *mut _), &mut occupied);
+        native_tools(
+            bar,
+            HWND(request.widget as *mut _),
+            request.rect,
+            &mut occupied,
+        )?;
         if taskbar::taskbar_rect(bar) != Some(request.rect) {
             return Err(windows::core::Error::new(
                 windows::Win32::Foundation::E_FAIL,
@@ -409,12 +414,18 @@ unsafe fn walk(
         *budget -= 1;
         // SAFETY: element is a live UIA reference on this COM thread.
         let handle = unsafe { element.CurrentNativeWindowHandle() }?;
-        if handle.0 as isize != request.widget
-            // SAFETY: The same live element is queried without releasing it.
-            && !unsafe { element.CurrentIsOffscreen() }?.as_bool()
-        {
+        let bar = HWND(request.taskbar as *mut _);
+        // UIA can attach owned popup windows to the taskbar's accessibility
+        // tree even though they are not embedded taskbar children.
+        if is_taskbar_element(bar, HWND(request.widget as *mut _), handle) {
             // SAFETY: element remains a live UIA reference on this COM thread.
             let kind = unsafe { element.CurrentControlType() }?;
+            if is_popup_control(kind) {
+                // Skip the entire transient subtree, including handle-less items.
+                // SAFETY: walker and element are live on this COM thread.
+                child = optional_element(unsafe { walker.GetNextSiblingElement(&element) })?;
+                continue;
+            }
             // Container rectangles often span the whole taskbar. Only reserve
             // actual controls, not the XAML host or task-list background.
             if [
@@ -422,7 +433,6 @@ unsafe fn walk(
                 UIA_CheckBoxControlTypeId,
                 UIA_RadioButtonControlTypeId,
                 UIA_ListItemControlTypeId,
-                UIA_MenuItemControlTypeId,
                 UIA_HyperlinkControlTypeId,
                 UIA_EditControlTypeId,
                 UIA_SliderControlTypeId,
@@ -434,10 +444,20 @@ unsafe fn walk(
             {
                 // SAFETY: element remains a live UIA reference on this COM thread.
                 let rect = unsafe { element.CurrentBoundingRectangle() }?;
-                if overlaps(rect, request.rect) {
+                // IsOffscreen may reflect occlusion by Start or a flyout. Native
+                // child visibility is independent of those temporary overlays.
+                // SAFETY: These queries use the same live element/window.
+                let visible = if handle.is_invalid() {
+                    !unsafe { element.CurrentIsOffscreen() }?.as_bool()
+                } else {
+                    unsafe { IsWindowVisible(handle) }.as_bool()
+                };
+                if visible && is_taskbar_rect(rect, request.rect) {
                     occupied.push(rect);
                 }
             }
+            // Do not prune offscreen containers: providers can mark a host
+            // occluded while its embedded taskbar controls remain in place.
             // SAFETY: Recursion uses the same COM thread and live references.
             unsafe { walk(walker, &element, request, occupied, budget, depth + 1) }?;
         }
@@ -445,6 +465,32 @@ unsafe fn walk(
         child = optional_element(unsafe { walker.GetNextSiblingElement(&element) })?;
     }
     Ok(())
+}
+
+fn is_taskbar_element(bar: HWND, widget: HWND, handle: HWND) -> bool {
+    if handle.is_invalid() {
+        return true; // XAML controls often have no native window of their own.
+    }
+    // SAFETY: IsChild accepts handles from UIA and returns false for stale ones.
+    handle != widget
+        && !unsafe { IsChild(widget, handle) }.as_bool()
+        && (handle == bar || unsafe { IsChild(bar, handle) }.as_bool())
+}
+
+fn is_popup_control(kind: UIA_CONTROLTYPE_ID) -> bool {
+    [
+        UIA_MenuControlTypeId,
+        UIA_MenuItemControlTypeId,
+        UIA_ToolTipControlTypeId,
+        UIA_WindowControlTypeId,
+    ]
+    .contains(&kind)
+}
+
+fn is_taskbar_rect(rect: RECT, bar: RECT) -> bool {
+    // Overlapping the taskbar is not enough: flyouts and previews can extend
+    // into it without taking a slot in its horizontal layout.
+    overlaps(rect, bar) && rect.top >= bar.top && rect.bottom <= bar.bottom
 }
 
 fn optional_element(
@@ -461,23 +507,36 @@ fn optional_element(
 
 /// Third-party child windows may not implement UIA. Reserve their full bounds,
 /// but don't mistake Explorer's full-width host windows for occupied controls.
-unsafe fn native_tools(bar: HWND, widget: HWND, occupied: &mut Vec<RECT>) {
-    struct Search {
-        bar: HWND,
-        widget: HWND,
-        rects: *mut Vec<RECT>,
-    }
-    unsafe extern "system" fn visit(
-        hwnd: HWND,
-        data: windows::Win32::Foundation::LPARAM,
-    ) -> windows::Win32::Foundation::BOOL {
-        // SAFETY: EnumChildWindows invokes this synchronously with the exclusive
-        // Search pointer below. Its output vector lives for the whole scan.
-        let search = unsafe { &mut *(data.0 as *mut Search) };
-        if hwnd != search.widget
-            // SAFETY: hwnd is supplied by the active window enumeration.
-            && unsafe { GetParent(hwnd) }.is_ok_and(|parent| parent == search.bar)
-            // SAFETY: Visibility is queried for the same enumerated window.
+fn native_tools(
+    bar: HWND,
+    widget: HWND,
+    bar_rect: RECT,
+    occupied: &mut Vec<RECT>,
+) -> windows::core::Result<()> {
+    let mut after = HWND::default();
+    // EnumChildWindows can omit embedded widgets on customized Explorer taskbars
+    // even while FindWindowEx reports their live, visible child windows. Walk the
+    // direct siblings instead; nested host windows are handled by UIA above.
+    for _ in 0..2048 {
+        // SAFETY: Only window handles are queried, with no cross-process pointers
+        // or synchronous messages. Null class/title match every direct child.
+        let hwnd = match unsafe {
+            FindWindowExW(
+                bar,
+                after,
+                windows::core::PCWSTR::null(),
+                windows::core::PCWSTR::null(),
+            )
+        } {
+            Ok(hwnd) => hwnd,
+            // No next child is normal; FindWindowEx need not set last-error.
+            Err(_) => return Ok(()),
+        };
+        after = hwnd;
+        if hwnd != widget
+            // SAFETY: These queries accept live or stale handles from lookup.
+            && unsafe { GetParent(hwnd) }.is_ok_and(|parent| parent == bar)
+            && unsafe { IsChild(bar, hwnd) }.as_bool()
             && unsafe { IsWindowVisible(hwnd) }.as_bool()
         {
             let class = taskbar::class_name(hwnd);
@@ -491,28 +550,17 @@ unsafe fn native_tools(bar: HWND, widget: HWND, occupied: &mut Vec<RECT>) {
                     | "WorkerW"
             ) {
                 if let Some(rect) = taskbar::window_rect(hwnd) {
-                    // SAFETY: The caller lends occupied exclusively throughout
-                    // enumeration and no other reference accesses it here.
-                    unsafe { (*search.rects).push(rect) };
+                    if is_taskbar_rect(rect, bar_rect) {
+                        occupied.push(rect);
+                    }
                 }
             }
         }
-        windows::Win32::Foundation::BOOL(1)
     }
-    let mut search = Search {
-        bar,
-        widget,
-        rects: occupied,
-    };
-    // SAFETY: search and its exclusive output vector outlive this synchronous
-    // enumeration; visit uses the matching system ABI and pointer type.
-    unsafe {
-        let _ = EnumChildWindows(
-            bar,
-            Some(visit),
-            windows::Win32::Foundation::LPARAM(&mut search as *mut _ as isize),
-        );
-    }
+    Err(windows::core::Error::new(
+        windows::Win32::Foundation::E_FAIL,
+        "Taskbar child windows exceed scan limits",
+    ))
 }
 
 fn overlaps(a: RECT, b: RECT) -> bool {
@@ -872,6 +920,53 @@ mod tests {
     }
 
     #[test]
+    fn popup_content_does_not_change_the_taskbar_gap() {
+        let bar = rect(-1000, 0);
+        let embedded = rect(-1000, -700);
+        let tray = rect(-100, 0);
+        for popup in [
+            RECT {
+                top: 800,
+                bottom: 1020,
+                ..rect(-850, -400)
+            },
+            RECT {
+                top: 990,
+                bottom: 1050,
+                ..rect(-850, -400)
+            },
+        ] {
+            let occupied: Vec<_> = [embedded, tray, popup]
+                .into_iter()
+                .filter(|rect| is_taskbar_rect(*rect, bar))
+                .collect();
+            assert_eq!(occupied, [embedded, tray]);
+            assert_eq!(
+                choose_x(
+                    bar,
+                    &occupied,
+                    200,
+                    bar.left,
+                    Some(-692),
+                    8,
+                    Placement::Left
+                ),
+                Some(-692)
+            );
+        }
+        for kind in [
+            UIA_MenuControlTypeId,
+            UIA_MenuItemControlTypeId,
+            UIA_ToolTipControlTypeId,
+            UIA_WindowControlTypeId,
+        ] {
+            assert!(is_popup_control(kind));
+        }
+        assert!(!is_popup_control(UIA_ButtonControlTypeId));
+        assert!(!is_popup_control(UIA_PaneControlTypeId));
+    }
+
+    #[test]
     fn right_preference_and_space_reappearing() {
         let bar = rect(0, 1000);
         assert_eq!(
@@ -980,6 +1075,115 @@ mod tests {
     }
 
     #[test]
+    fn native_slots_follow_direct_widget_bounds_and_ignore_owned_popups() {
+        use windows::core::w;
+        use windows::Win32::Foundation::HINSTANCE;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, SetWindowPos, ShowWindow, HMENU, SWP_NOACTIVATE,
+            SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINDOW_STYLE, WS_CHILD, WS_EX_NOACTIVATE,
+            WS_POPUP, WS_VISIBLE,
+        };
+
+        struct Windows(Vec<HWND>);
+        impl Windows {
+            fn create(&mut self, parent: HWND, style: WINDOW_STYLE, width: i32) -> HWND {
+                // SAFETY: STATIC is built in; the test thread owns every window
+                // and destroys them in reverse creation order below.
+                let hwnd = unsafe {
+                    CreateWindowExW(
+                        WS_EX_NOACTIVATE,
+                        w!("STATIC"),
+                        w!("native slot test"),
+                        style,
+                        0,
+                        0,
+                        width,
+                        48,
+                        parent,
+                        HMENU::default(),
+                        HINSTANCE::default(),
+                        None,
+                    )
+                }
+                .unwrap();
+                self.0.push(hwnd);
+                hwnd
+            }
+        }
+        impl Drop for Windows {
+            fn drop(&mut self) {
+                for hwnd in self.0.iter().rev() {
+                    // SAFETY: Each handle belongs to this test thread and is
+                    // destroyed before its parent/owner.
+                    unsafe { DestroyWindow(*hwnd) }.unwrap();
+                }
+            }
+        }
+        let mut windows = Windows(Vec::new());
+        let bar = windows.create(HWND::default(), WS_POPUP | WS_VISIBLE, 1000);
+        let widget = windows.create(bar, WS_CHILD | WS_VISIBLE, 224);
+        let other = windows.create(bar, WS_CHILD | WS_VISIBLE, 285);
+        let popup = windows.create(bar, WS_POPUP | WS_VISIBLE, 600);
+        let _popup_child = windows.create(popup, WS_CHILD | WS_VISIBLE, 600);
+        let bounds = taskbar::window_rect(bar).unwrap();
+        let measure = || {
+            let mut occupied = Vec::new();
+            native_tools(bar, widget, bounds, &mut occupied).unwrap();
+            occupied
+        };
+        for show in [SW_HIDE, SW_SHOWNOACTIVATE, SW_HIDE] {
+            // SAFETY: The test owns this non-activating popup.
+            let was_visible = unsafe { ShowWindow(popup, show) }.as_bool();
+            assert_eq!(was_visible, show != SW_SHOWNOACTIVATE);
+            let occupied = measure();
+            assert_eq!(occupied, [taskbar::window_rect(other).unwrap()]);
+            assert_eq!(
+                choose_x(
+                    bounds,
+                    &occupied,
+                    224,
+                    bounds.left,
+                    None,
+                    8,
+                    Placement::Left
+                ),
+                Some(bounds.left + 293)
+            );
+        }
+        // Real resizing must immediately change the reserved slot.
+        // SAFETY: The test owns the child; no activation or z-order changes.
+        unsafe {
+            SetWindowPos(
+                other,
+                HWND::default(),
+                0,
+                0,
+                150,
+                48,
+                SWP_NOACTIVATE | SWP_NOZORDER,
+            )
+        }
+        .unwrap();
+        assert_eq!(measure(), [taskbar::window_rect(other).unwrap()]);
+        assert_eq!(
+            choose_x(
+                bounds,
+                &measure(),
+                224,
+                bounds.left,
+                None,
+                8,
+                Placement::Left
+            ),
+            Some(bounds.left + 158)
+        );
+        // A genuinely hidden widget no longer reserves space.
+        // SAFETY: The test owns the child.
+        assert!(unsafe { ShowWindow(other, SW_HIDE) }.as_bool());
+        assert!(measure().is_empty());
+    }
+
+    #[test]
     fn taskbar_events_filter_unrelated_windows_and_coalesce_bursts() {
         use windows::core::w;
         use windows::Win32::Foundation::HINSTANCE;
@@ -991,6 +1195,20 @@ mod tests {
         struct TestWindow(HWND);
         impl TestWindow {
             fn new(parent: HWND) -> Self {
+                Self::with_style(
+                    parent,
+                    if parent.is_invalid() {
+                        WS_POPUP
+                    } else {
+                        WS_CHILD
+                    },
+                )
+            }
+
+            fn with_style(
+                parent: HWND,
+                style: windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE,
+            ) -> Self {
                 // SAFETY: STATIC is a built-in window class. Test windows are
                 // hidden, owned by this thread, and destroyed below.
                 Self(unsafe {
@@ -998,11 +1216,7 @@ mod tests {
                         WINDOW_EX_STYLE::default(),
                         w!("STATIC"),
                         w!("placement test"),
-                        if parent.is_invalid() {
-                            WS_POPUP
-                        } else {
-                            WS_CHILD
-                        },
+                        style,
                         0,
                         0,
                         100,
@@ -1027,6 +1241,17 @@ mod tests {
         let widget = TestWindow::new(bar.0);
         let other = TestWindow::new(bar.0);
         let unrelated = TestWindow::new(HWND::default());
+        let popup = TestWindow::with_style(bar.0, WS_POPUP);
+        let popup_child = TestWindow::new(popup.0);
+        let widget_child = TestWindow::new(widget.0);
+        let other_child = TestWindow::new(other.0);
+        assert!(is_taskbar_element(bar.0, widget.0, other.0));
+        assert!(is_taskbar_element(bar.0, widget.0, other_child.0));
+        assert!(is_taskbar_element(bar.0, widget.0, HWND::default()));
+        assert!(!is_taskbar_element(bar.0, widget.0, popup.0));
+        assert!(!is_taskbar_element(bar.0, widget.0, popup_child.0));
+        assert!(!is_taskbar_element(bar.0, widget.0, widget_child.0));
+        assert!(!is_taskbar_element(bar.0, widget.0, unrelated.0));
         let events = TaskbarEvents::new(controller.0);
         assert!(!events.0.is_invalid());
         events.watch(bar.0, widget.0);
@@ -1051,6 +1276,8 @@ mod tests {
         };
         notify(widget.0, EVENT_OBJECT_LOCATIONCHANGE);
         notify(unrelated.0, EVENT_OBJECT_HIDE);
+        notify(popup.0, EVENT_OBJECT_SHOW);
+        notify(popup_child.0, EVENT_OBJECT_LOCATIONCHANGE);
         assert!(!take_message());
         for event in [
             EVENT_OBJECT_HIDE,
@@ -1127,11 +1354,33 @@ mod tests {
             .into_iter()
             .next()
             .expect("Explorer taskbar");
+        // SAFETY: Read-only lookup of our optional, already-running child window.
+        let widget = unsafe {
+            FindWindowExW(
+                bar.hwnd,
+                HWND::default(),
+                windows::core::w!("NetSpeedWidgetTaskbar"),
+                windows::core::PCWSTR::null(),
+            )
+        }
+        .unwrap_or(HWND(-1_isize as *mut _));
         let mut probe = OccupancyProbe::new(HWND::default());
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(rects) = probe.occupied(bar.hwnd, HWND(-1_isize as *mut _), bar.rect) {
+            if let Some(rects) = probe.occupied(bar.hwnd, widget, bar.rect) {
                 eprintln!("Taskbar {:?}; occupied: {rects:?}", bar.rect);
+                eprintln!(
+                    "Left placement for a 224px widget: {:?}",
+                    choose_x(
+                        bar.rect,
+                        rects,
+                        224,
+                        bar.rect.left,
+                        None,
+                        8,
+                        Placement::Left
+                    )
+                );
                 assert!(!rects.is_empty());
                 break;
             }
