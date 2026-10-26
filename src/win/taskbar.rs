@@ -6,9 +6,9 @@ use windows::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, GetClassNameW, GetParent, GetWindowLongW, GetWindowRect,
-    IsWindow, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CHILD, WS_CLIPSIBLINGS, WS_POPUP,
+    EnumChildWindows, EnumWindows, FindWindowW, GetClassNameW, GetParent, GetWindowLongW,
+    GetWindowRect, IsWindow, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CHILD, WS_CLIPSIBLINGS, WS_POPUP,
 };
 
 /// Attach only our own window; Explorer's styles and layout remain untouched.
@@ -94,6 +94,25 @@ pub fn find_taskbars() -> Vec<TaskbarWindow> {
             Some(enum_proc),
             LPARAM(&mut taskbars as *mut Vec<TaskbarWindow> as isize),
         );
+    }
+    // Customized Explorer shells can omit the primary taskbar from EnumWindows
+    // while it remains available by class lookup, just like embedded widgets.
+    if !taskbars.iter().any(|bar| bar.is_primary) {
+        // SAFETY: Static class string and a null title; no pointers are retained.
+        if let Ok(hwnd) = unsafe {
+            FindWindowW(
+                windows::core::w!("Shell_TrayWnd"),
+                windows::core::PCWSTR::null(),
+            )
+        } {
+            if let Some(rect) = taskbar_rect(hwnd) {
+                taskbars.push(TaskbarWindow {
+                    hwnd,
+                    rect,
+                    is_primary: true,
+                });
+            }
+        }
     }
     taskbars.sort_by_key(|taskbar| {
         (

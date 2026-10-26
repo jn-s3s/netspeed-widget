@@ -115,10 +115,16 @@ topmost window. It does not reserve taskbar space or change the taskbar's styles
 Only the widget's rectangle receives its clicks.
 
 For placement, choose Prefer left side or Next to the notification area.
-Both check exposed taskbar controls about once per second, including changes
-from opening apps or switching icon alignment. The widget stays put while it
-fits, waits for layout changes to settle before moving to another gap, and
-temporarily hides when no gap fits or the layout cannot be read. The tray icon
+Both react to taskbar layout notifications, with polling about once per second
+as a fallback for controls that do not send notifications. Prefer left side moves
+back to the leftmost available gap when other controls shrink or disappear.
+Next to the notification area returns to its anchor, with a DPI-scaled gap, when
+space allows; while the anchor is blocked, it keeps a safe current position.
+In either mode, the widget moves as soon as a usable layout scan completes,
+without an additional movement delay. Event-driven scans are rate-limited to
+one every 32 ms; detection speed still depends on the accessibility provider.
+It waits one second before temporarily hiding when no gap fits or the layout
+cannot be read, so brief detection failures do not cause flicker. The tray icon
 remains available, and the widget returns automatically when space is available again.
 
 Detection uses Windows accessibility information and visible taskbar child
