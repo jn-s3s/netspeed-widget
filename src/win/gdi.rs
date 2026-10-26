@@ -153,6 +153,19 @@ impl Font {
     pub fn line_height(&self) -> i32 {
         self.height
     }
+
+    /// Baseline below the layout origin, for the fallback label backend.
+    pub fn baseline(&self) -> f32 {
+        let mut metrics = windows::Win32::Graphics::Gdi::TEXTMETRICW::default();
+        // SAFETY: This font owns the DC and metrics is writable output storage.
+        unsafe {
+            if windows::Win32::Graphics::Gdi::GetTextMetricsW(self.hdc, &mut metrics).as_bool() {
+                metrics.tmAscent as f32
+            } else {
+                self.height as f32
+            }
+        }
+    }
 }
 
 impl Drop for Font {

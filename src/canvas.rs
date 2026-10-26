@@ -68,7 +68,7 @@ pub struct CoverageMask {
     pub offset_y: i32,
 }
 
-/// Draws text into coverage masks. Implemented by the GDI font wrapper.
+/// Draws text into coverage masks using backend-matched measurements.
 pub trait TextRenderer {
     /// Width of the text in pixels.
     fn measure(&self, text: &str) -> f32;

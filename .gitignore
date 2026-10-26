@@ -18,3 +18,4 @@ third_party/fast-bundle/node_modules/
 .pytest_cache/
 .ruff_cache/
 .venv/
+/screenshots
