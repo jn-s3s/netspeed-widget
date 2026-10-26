@@ -36,6 +36,8 @@ pub const CMD_AUTO_FIT: u32 = 1112;
 pub const CMD_SUBTLE_BACKGROUND: u32 = 1113;
 /// Toggles the traffic graph fill.
 pub const CMD_GRAPH_FILL: u32 = 1114;
+/// Toggles the gentle failure text pulse.
+pub const CMD_ANIMATE_ERRORS: u32 = 1115;
 /// First command ID reserved for theme presets, indexed by preset order.
 pub const CMD_THEME_BASE: u32 = 2000;
 /// First command ID reserved for taskbar monitors, indexed by menu order.

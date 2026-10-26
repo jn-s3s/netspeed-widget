@@ -39,7 +39,7 @@ use crate::format::{
 };
 use crate::graph::TrafficGraph;
 use crate::hotkey;
-use crate::latency::{LatencyProbe, LatencyResult};
+use crate::latency::{DisplayState, LatencyProbe, LatencyResult, LATENCY_GOOD_MS};
 use crate::logger;
 use crate::paint::{self, Fonts, WidgetView};
 use crate::sampler::{NetSample, NetSampler};
@@ -67,6 +67,8 @@ const TIMER_TICK: usize = 1;
 const TIMER_BACKGROUND: usize = 2;
 /// One-shot retry for a rate-limited event-driven layout scan.
 const TIMER_LAYOUT_RETRY: usize = 3;
+/// Repaints failure text only; never samples traffic or starts probes.
+const TIMER_FAILURE_PULSE: usize = 4;
 
 /// How often the widget refreshes, in milliseconds.
 const UI_TICK_MS: u32 = 250;
@@ -80,8 +82,6 @@ const SPEEDTEST_INTERVAL_SEC: f64 = 4.0 * 60.0 * 60.0;
 const SPEEDTEST_STARTUP_GRACE_SEC: f64 = 20.0;
 /// Delay before a failed speedtest is retried.
 const SPEEDTEST_RETRY_SEC: f64 = 15.0 * 60.0;
-/// Latency below this counts as healthy.
-const LATENCY_GOOD_MS: f64 = 80.0;
 /// Identifier of the global hotkey registration.
 const HOTKEY_ID: i32 = 1;
 
@@ -106,6 +106,8 @@ struct AppState {
     auto_fit: bool,
     subtle_background: bool,
     graph_fill: bool,
+    animate_errors: bool,
+    failure_pulse: Option<Instant>,
     density_settler: DensitySettler,
     down_formatter: RateFormatter,
     up_formatter: RateFormatter,
@@ -186,7 +188,9 @@ pub fn run() -> Result<(), String> {
 
     let controller = unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            // This hidden top-level window owns the settings menus, not the
+            // taskbar child. Keep its popups in front of Explorer's taskbar.
+            WS_EX_TOOLWINDOW | windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST,
             PCWSTR(controller_class.as_ptr()),
             PCWSTR::null(),
             WS_POPUP,
@@ -210,6 +214,7 @@ pub fn run() -> Result<(), String> {
         auto_fit,
         subtle_background,
         graph_fill,
+        animate_errors,
     } = config::display_preferences();
     let appearance = Appearance::current();
     let palette = theme::resolved_palette(&theme_name, appearance, subtle_background);
@@ -221,7 +226,9 @@ pub fn run() -> Result<(), String> {
     let probe = LatencyProbe::new(Duration::from_secs(2), Duration::from_millis(1500));
 
     let height = 48;
-    let width = paint::widget_width(layout, show_graph, 96);
+    let fonts = Fonts::for_dpi(96, layout == DisplayLayout::SingleLine, height)
+        .ok_or("could not create widget fonts")?;
+    let width = paint::widget_width(layout, show_graph, &fonts);
     let next_due = next_speedtest_due(
         config::speedtest().as_ref(),
         now_epoch(),
@@ -245,6 +252,8 @@ pub fn run() -> Result<(), String> {
         auto_fit,
         subtle_background,
         graph_fill,
+        animate_errors,
+        failure_pulse: None,
         density_settler: DensitySettler::default(),
         down_formatter: RateFormatter::default(),
         up_formatter: RateFormatter::default(),
@@ -269,7 +278,7 @@ pub fn run() -> Result<(), String> {
             })
             .unwrap_or_default(),
         graph: TrafficGraph::new(),
-        fonts: Fonts::for_dpi(96, layout == DisplayLayout::SingleLine, height),
+        fonts: Some(fonts),
         width,
         height,
         hovering: false,
@@ -564,6 +573,17 @@ fn position_widget(state: &mut AppState) {
     let height = taskbar_height.max(1);
     let dpi = unsafe { GetDpiForWindow(taskbar.hwnd) }.max(96);
     let desired = paint::effective_layout(state.layout, height, dpi);
+    let geometry_changed = dpi != state.dpi || height != state.height;
+    let font_layout_changed = (desired == DisplayLayout::SingleLine)
+        != (state.effective_layout == DisplayLayout::SingleLine);
+    if geometry_changed || font_layout_changed || state.fonts.is_none() {
+        state.fonts = Fonts::for_dpi(dpi, desired == DisplayLayout::SingleLine, height);
+    }
+    let Some(fonts) = state.fonts.as_ref() else {
+        state.placement_available = false;
+        sync_widget_visibility(state);
+        return;
+    };
     let occupied = state
         .occupancy
         .occupied(taskbar.hwnd, state.widget, rect)
@@ -571,7 +591,7 @@ fn position_widget(state: &mut AppState) {
     let gap = (8.0 * dpi as f32 / 96.0).round() as i32;
     let tray_left = taskbar::tray_left(taskbar.hwnd, rect);
     let can_fit = |layout, margin| {
-        let width = paint::widget_width(layout, state.show_graph, dpi) + margin;
+        let width = paint::widget_width(layout, state.show_graph, fonts) + margin;
         occupied
             .as_ref()
             .and_then(|areas| {
@@ -605,23 +625,17 @@ fn position_widget(state: &mut AppState) {
         // Unknown occupancy is not evidence that there is room to expand.
         candidate = DisplayLayout::Compact;
     }
-    let geometry_changed = dpi != state.dpi || height != state.height;
     state.effective_layout = state.density_settler.choose(
         state.effective_layout,
         candidate,
         geometry_changed || state.placed_for.is_none(),
         Instant::now(),
     );
-    let width = paint::widget_width(state.effective_layout, state.show_graph, dpi);
+    let width = paint::widget_width(state.effective_layout, state.show_graph, fonts);
     if state.width != width || geometry_changed {
         state.width = width;
         state.height = height;
         state.dpi = dpi;
-        state.fonts = Fonts::for_dpi(
-            dpi,
-            state.effective_layout == DisplayLayout::SingleLine,
-            height,
-        );
         state.placed_for = None;
     }
     let preferred = match state.placement {
@@ -740,6 +754,10 @@ fn ping_text(state: &AppState) -> String {
     crate::latency::ping_label(state.probe.latest(), now_epoch(), state.speedtest_running)
 }
 
+fn displayed_state(state: &AppState) -> DisplayState {
+    DisplayState::derive(state.probe.latest(), now_epoch(), state.speedtest_running)
+}
+
 /// Registers the global hotkey.
 fn apply_hotkey(state: &mut AppState) {
     if state.hotkey_ok {
@@ -801,6 +819,7 @@ fn start_speedtest(manual: bool) {
         }
         state.speedtest_running = true;
         state.speedtest_summary = "Speedtest is running...".to_string();
+        render(state);
         state.controller
     };
     logger::info(
@@ -896,6 +915,7 @@ fn finish_speedtest(result: Option<SpeedtestResult>) {
         }
     }
     update_tray_tooltip(state);
+    render(state);
 }
 
 /// The controller window procedure.
@@ -913,6 +933,21 @@ unsafe extern "system" fn controller_proc(
 
 unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        windows::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE
+        | windows::Win32::UI::WindowsAndMessaging::WM_THEMECHANGED
+        | windows::Win32::UI::WindowsAndMessaging::WM_SYSCOLORCHANGE => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                state.appearance = Appearance::current();
+                state.palette = theme::resolved_palette(
+                    &state.theme_name,
+                    state.appearance,
+                    state.subtle_background,
+                );
+                render(state);
+            }
+            LRESULT(0)
+        }
         WM_TASKBAR_LAYOUT_CHANGED | WM_TASKBAR_LAYOUT_READY => {
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
             if let Some(state) = guard.as_mut() {
@@ -1152,6 +1187,13 @@ fn set_hovering(hovering: bool) {
 /// The UI refresh.
 fn tick(timer: usize) {
     match timer {
+        TIMER_FAILURE_PULSE => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                render(state);
+            }
+            return;
+        }
         TIMER_LAYOUT_RETRY => {
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
             if let Some(state) = guard.as_mut() {
@@ -1326,6 +1368,7 @@ fn health_for_latency(result: LatencyResult) -> Health {
 
 /// Draws the widget.
 fn render(state: &mut AppState) {
+    sync_failure_animation(state);
     if state.widget.is_invalid() || !state.widget_visible || !state.placement_available {
         return;
     }
@@ -1334,16 +1377,14 @@ fn render(state: &mut AppState) {
     };
     let mut canvas = Canvas::new(state.width, state.height);
     let samples = state.sampler.history();
-    let result = state.probe.latest();
-    let ping_text = ping_text(state);
-    let ping_pending =
-        state.speedtest_running || result.ts == 0.0 || now_epoch() - result.ts > 10.0;
     let view = WidgetView {
         down: &state.down_text,
         up: &state.up_text,
-        ping_text: &ping_text,
-        health: state.health,
-        ping_pending,
+        status: displayed_state(state),
+        failure_intensity: state
+            .failure_pulse
+            .map(|start| pulse_intensity(start.elapsed().as_secs_f32()))
+            .unwrap_or(1.0),
         samples: &samples,
         layout: state.effective_layout,
         show_graph: state.show_graph,
@@ -1351,6 +1392,62 @@ fn render(state: &mut AppState) {
     };
     paint::paint(&mut canvas, fonts, &view, &state.palette, &mut state.graph);
     state.pending_canvas = Some(canvas);
+}
+
+fn animate_failure(
+    status: DisplayState,
+    visible: bool,
+    enabled: bool,
+    appearance: Appearance,
+) -> bool {
+    status == DisplayState::Failed
+        && visible
+        && enabled
+        && appearance.animations
+        && !appearance.high_contrast
+}
+
+fn pulse_intensity(elapsed: f32) -> f32 {
+    // Full strength on entry; a smooth two-second cycle with opaque endpoints.
+    (1.0 + (elapsed * std::f32::consts::PI).cos()) * 0.5
+}
+
+fn sync_failure_animation(state: &mut AppState) {
+    let animate = animate_failure(
+        displayed_state(state),
+        state.widget_shown,
+        state.animate_errors,
+        state.appearance,
+    );
+    match (animate, state.failure_pulse) {
+        (true, None) => {
+            // SAFETY: The UI-thread controller owns this message-only timer.
+            if unsafe { SetTimer(state.controller, TIMER_FAILURE_PULSE, 50, None) } != 0 {
+                state.failure_pulse = Some(Instant::now());
+            } else {
+                logger::warning(
+                    "paint",
+                    "could not start failure pulse timer; using steady red",
+                );
+            }
+        }
+        (false, Some(_)) => {
+            // SAFETY: This timer belongs to the live controller on the UI thread.
+            if let Err(err) = unsafe {
+                windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                    state.controller,
+                    TIMER_FAILURE_PULSE,
+                )
+            } {
+                logger::warning(
+                    "paint",
+                    &format!("could not stop failure pulse timer: {err}"),
+                );
+            }
+            state.failure_pulse = None;
+        }
+        _ => {}
+    }
 }
 
 /// Win32 may dispatch sent messages while waiting for Explorer. Never run these
@@ -1364,6 +1461,7 @@ fn flush_native_effects() {
         let effects = {
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
             guard.as_mut().map(|state| {
+                sync_failure_animation(state);
                 let tip = state.pending_tray_tip.take();
                 let tray = if tip.is_some() {
                     state.tray.take()
@@ -1456,18 +1554,8 @@ fn flush_native_effects() {
 
 /// Shared text for native hover details and the keyboard-accessible panel.
 fn details_snapshot(state: &AppState) -> details::Snapshot {
-    let result = state.probe.latest();
-    let probe = if result.ts == 0.0 {
-        "Waiting for first probe".to_string()
-    } else if now_epoch() - result.ts > 10.0 {
-        "Probe result unavailable (stale)".to_string()
-    } else if !result.ok {
-        "Probe failed (TCP and ICMP)".to_string()
-    } else if let Some(ms) = result.ms {
-        format!("TCP latency: {ms:.0} ms")
-    } else {
-        "ICMP reachable; TCP probe blocked".to_string()
-    };
+    let display = displayed_state(state);
+    let probe = format!("{}: {}", display.label(), display.explanation());
     let (down, up) = state.sampler.session_totals();
     let speedtest = config::speedtest()
         .map(|test| {
@@ -1677,6 +1765,11 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         label: "Shade download area".to_string(),
         checked: state.graph_fill,
     });
+    entries.push(MenuEntry::Check {
+        id: CMD_ANIMATE_ERRORS,
+        label: "Animate errors".to_string(),
+        checked: state.animate_errors,
+    });
 
     let placement_items = vec![
         MenuEntry::Check {
@@ -1822,6 +1915,7 @@ fn show_popup_menu(owner: HWND, entries: &[MenuEntry], cursor: POINT) {
         }
         state.menu_open = true;
     }
+    set_tooltip_active(false);
     let selected = menu::show(owner, entries, cursor.x, cursor.y);
     {
         let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
@@ -1829,8 +1923,31 @@ fn show_popup_menu(owner: HWND, entries: &[MenuEntry], cursor: POINT) {
             state.menu_open = false;
         }
     }
+    set_tooltip_active(true);
     if let Some(id) = selected {
         handle_command(id);
+    }
+}
+
+/// Native tooltip messages can reenter the widget, so send them without STATE locked.
+fn set_tooltip_active(active: bool) {
+    let (mut tooltip, widget) = {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        (state.tooltip.take(), state.widget)
+    };
+    if let Some(tooltip) = tooltip.as_ref() {
+        tooltip.set_active(active);
+    }
+    {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(state) = guard.as_mut() {
+            if state.widget == widget {
+                state.tooltip = tooltip.take();
+            }
+        }
     }
 }
 
@@ -1896,7 +2013,8 @@ fn handle_command(id: u32) {
         | CMD_UNITS_BYTES
         | CMD_AUTO_FIT
         | CMD_SUBTLE_BACKGROUND
-        | CMD_GRAPH_FILL => {
+        | CMD_GRAPH_FILL
+        | CMD_ANIMATE_ERRORS => {
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
             if let Some(state) = guard.as_mut() {
                 match id {
@@ -1915,6 +2033,7 @@ fn handle_command(id: u32) {
                     CMD_AUTO_FIT => state.auto_fit = !state.auto_fit,
                     CMD_SUBTLE_BACKGROUND => state.subtle_background = !state.subtle_background,
                     CMD_GRAPH_FILL => state.graph_fill = !state.graph_fill,
+                    CMD_ANIMATE_ERRORS => state.animate_errors = !state.animate_errors,
                     _ => {}
                 }
                 use config::DisplayPreference;
@@ -1926,6 +2045,7 @@ fn handle_command(id: u32) {
                     CMD_AUTO_FIT => DisplayPreference::AutoFit(state.auto_fit),
                     CMD_SUBTLE_BACKGROUND => DisplayPreference::Background(state.subtle_background),
                     CMD_GRAPH_FILL => DisplayPreference::Fill(state.graph_fill),
+                    CMD_ANIMATE_ERRORS => DisplayPreference::AnimateErrors(state.animate_errors),
                     _ => unreachable!("display command was matched above"),
                 });
                 state.palette = theme::resolved_palette(
@@ -1935,6 +2055,7 @@ fn handle_command(id: u32) {
                 );
                 state.placed_for = None;
                 state.density_settler.reset();
+                render(state);
             }
         }
         CMD_RUN_SPEEDTEST => start_speedtest(true),
@@ -2081,6 +2202,10 @@ fn shutdown() {
     state.sampler.stop();
     state.probe.stop();
     unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+            state.controller,
+            TIMER_FAILURE_PULSE,
+        );
         let _ = UnregisterHotKey(state.controller, state.hotkey_id);
         let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(state.controller, TIMER_TICK);
         let _ =
@@ -2103,6 +2228,63 @@ fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_only_runs_for_visible_failures_with_all_preferences_enabled() {
+        let appearance = Appearance {
+            animations: true,
+            ..Default::default()
+        };
+        assert!(animate_failure(
+            DisplayState::Failed,
+            true,
+            true,
+            appearance
+        ));
+        for status in [
+            DisplayState::Healthy(7.0),
+            DisplayState::Slow(80.0),
+            DisplayState::Check,
+            DisplayState::Waiting,
+            DisplayState::Stale,
+            DisplayState::Testing,
+        ] {
+            assert!(!animate_failure(status, true, true, appearance));
+        }
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            false,
+            true,
+            appearance
+        ));
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            true,
+            false,
+            appearance
+        ));
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            true,
+            true,
+            Appearance {
+                animations: false,
+                ..appearance
+            }
+        ));
+        assert!(!animate_failure(
+            DisplayState::Failed,
+            true,
+            true,
+            Appearance {
+                high_contrast: true,
+                ..appearance
+            }
+        ));
+        assert_eq!(pulse_intensity(0.0), 1.0);
+        assert!(pulse_intensity(1.0).abs() < 0.0001);
+        assert!((pulse_intensity(2.0) - 1.0).abs() < 0.0001);
+    }
 
     #[test]
     fn latency_health_covers_tcp_icmp_and_failure() {

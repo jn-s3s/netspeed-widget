@@ -8,7 +8,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenuEx,
     HMENU, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_NONOTIFY,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TPM_WORKAREA, WM_NULL,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
 };
 
 use crate::win::gdi::to_wide;
@@ -44,9 +44,11 @@ pub fn show(hwnd: HWND, entries: &[MenuEntry], x: i32, y: i32) -> Option<u32> {
     // as soon as it loses the mouse.
     unsafe {
         let _ = SetForegroundWindow(hwnd);
+        // Do not use TPM_WORKAREA: the cursor can be on the taskbar, and the
+        // menu should overlap it rather than being pushed into the desktop.
         let result = TrackPopupMenuEx(
             menu,
-            (TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY | TPM_WORKAREA).0,
+            (TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY).0,
             x,
             y,
             hwnd,
