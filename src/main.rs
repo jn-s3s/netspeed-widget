@@ -1,10 +1,9 @@
-//! NetSpeed Widget: a live network speed, latency and traffic readout that
-//! lives inside the Windows taskbar.
+//! NetSpeed Widget: live network speed, latency and traffic in the Windows taskbar.
 //!
-//! The app owns one independent taskbar overlay that shows download and upload
-//! rates, a latency probe and a rolling traffic graph. Hover/click details show
-//! session totals and previous speedtests. A tray icon carries the same menu, so the
-//! widget can be hidden without losing the way back to it.
+//! The widget is a child of Explorer's taskbar. It shows download and upload
+//! rates, probe status and an optional rolling graph. Hover or click for session
+//! totals and the last measured speedtest. The tray menu stays available when
+//! the widget is hidden.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -71,8 +70,10 @@ fn startup_message(message: &str) {
 
 /// Claims the single-instance mutex.
 ///
-/// A second copy would fight the first one over the taskbar slot, so it
-/// refuses to start instead.
+/// The returned handle keeps the mutex alive until shutdown.
+///
+/// # Errors
+/// Returns an error if another copy is running in this session or mutex creation fails.
 fn claim_single_instance() -> Result<OwnedHandle, String> {
     // SAFETY: The mutex name remains terminated and live throughout creation.
     // A successful call returns a unique owned kernel handle, transferred once

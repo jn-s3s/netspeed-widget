@@ -1,9 +1,9 @@
-//! The application: the taskbar widget, the tray icon and the services
-//! behind them.
+//! UI controller for the taskbar widget, tray icon and background measurements.
 //!
 //! The controller owns timers, the global hotkey and the tray icon. The widget
-//! is a non-activating child of Explorer's taskbar. All application state and window calls stay on the UI
-//! thread; workers publish network results through messages or snapshots.
+//! is a non-activating child of Explorer's taskbar. Application state and widget
+//! window calls stay on the UI thread. Measurement workers publish messages or
+//! snapshots; taskbar occupancy queries run on a separate worker.
 
 use crate::clock::now_epoch;
 use netspeed_widget::commands::*;
@@ -58,7 +58,7 @@ use crate::win::taskbar::{self, TaskbarWindow};
 use crate::win::tray::{TrayIcon, TRAY_CALLBACK};
 use crate::win::{appearance::Appearance, details, tooltip::Tooltip};
 
-/// Custom message carrying a background result to the UI thread.
+/// Notifies the UI thread that the speedtest result slot is ready to read.
 const WM_APP_SPEEDTEST: u32 = WM_APP + 1;
 
 /// Timer that refreshes the widget.
@@ -80,7 +80,7 @@ const GRAPH_SAMPLES: usize = 60;
 const SPEEDTEST_INTERVAL_SEC: f64 = 4.0 * 60.0 * 60.0;
 /// Delay before the first automatic speedtest after a fresh start.
 const SPEEDTEST_STARTUP_GRACE_SEC: f64 = 20.0;
-/// Delay before a failed speedtest is retried.
+/// Delay before retrying a failed speedtest or a passive estimate.
 const SPEEDTEST_RETRY_SEC: f64 = 15.0 * 60.0;
 /// Identifier of the global hotkey registration.
 const HOTKEY_ID: i32 = 1;
@@ -479,7 +479,7 @@ fn create_widget(hinstance: HINSTANCE, class: &[u16]) {
     }
 }
 
-/// Re-evaluate the saved monitor preference even while a fallback remains valid.
+/// Re-evaluates the saved monitor preference even while a fallback remains valid.
 fn preferred_taskbar() -> Option<TaskbarWindow> {
     let taskbars = taskbar::find_taskbars();
     let wanted = config::taskbar_monitor();
@@ -873,7 +873,7 @@ fn start_speedtest(manual: bool) {
     }
 }
 
-/// The result of the last finished speedtest.
+/// Shared slot for a worker's speedtest result, read on completion notification.
 fn pending_result() -> &'static Mutex<Option<SpeedtestResult>> {
     static RESULT: OnceLock<Mutex<Option<SpeedtestResult>>> = OnceLock::new();
     RESULT.get_or_init(|| Mutex::new(None))
@@ -1191,7 +1191,7 @@ fn set_hovering(hovering: bool) {
     render(state);
 }
 
-/// The UI refresh.
+/// Handles refresh, recovery, placement-retry and failure-pulse timers.
 fn tick(timer: usize) {
     match timer {
         TIMER_FAILURE_PULSE => {
@@ -1347,7 +1347,7 @@ fn apply_sample(state: &mut AppState, sample: NetSample) {
     }
 }
 
-/// Records the health of the latest latency reading.
+/// Updates display health from the latest probe, holding it steady during speedtests.
 fn apply_latency(state: &mut AppState) {
     let result = state.probe.latest();
     if result.ts == 0.0 {

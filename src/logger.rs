@@ -1,13 +1,10 @@
-//! File logging for a packaged app that has no console.
+//! Rotating file logs for windowed builds.
 //!
-//! `log.txt` under the app data directory is the only diagnostic surface a
-//! windowed build has, so it has to survive being the only one: writes never
-//! panic into the caller, the file rolls over at a size cap instead of
-//! growing forever, and a failed write is mirrored to stderr where one
-//! exists.
+//! Messages go to `log.txt` under the app data directory. Before an append would
+//! exceed 2 MB, the file rotates through two backups. Rotation and write errors
+//! are reported to stderr when available; they are not returned to callers.
 //!
-//! Every line is tagged with the subsystem that emitted it, which keeps each
-//! entry attributable without repeating the tag in the message text.
+//! Message entries include a UTC timestamp, severity and subsystem tag.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -33,12 +30,12 @@ pub fn info(subsystem: &str, message: &str) {
     write("INFO", subsystem, message);
 }
 
-/// Records a recovered failure the app worked around.
+/// Records a warning with its subsystem tag.
 pub fn warning(subsystem: &str, message: &str) {
     write("WARN", subsystem, message);
 }
 
-/// Records a failure the caller could not recover from.
+/// Records an error with its subsystem tag.
 pub fn error(subsystem: &str, message: &str) {
     write("ERROR", subsystem, message);
 }
@@ -51,7 +48,7 @@ pub fn section(title: &str) {
     append(&block);
 }
 
-/// Writes the startup banner carrying the runtime and packaging mode.
+/// Writes a startup banner with the app name, package name and debug-build flag.
 pub fn startup(app_name: &str) {
     section(&format!(
         "Startup - {app_name} | exe={} | debug={}",
@@ -68,7 +65,7 @@ fn write(level: &str, subsystem: &str, message: &str) {
     ));
 }
 
-/// Appends one block, rolling the file when it passes the size cap.
+/// Appends one block, rotating first if it would exceed the size cap.
 fn append(block: &str) {
     let _guard = LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let path = &*LOG_PATH;
@@ -118,10 +115,7 @@ fn rename_if_present(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Current UTC time as an ISO 8601 timestamp.
-///
-/// Hand-rolled rather than pulled from a date-time crate: the log only needs
-/// a sortable stamp, and the app has no other reason to carry a calendar.
+/// Returns the current UTC time as an ISO 8601 timestamp with milliseconds.
 fn now_iso() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

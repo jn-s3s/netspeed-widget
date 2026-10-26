@@ -2,7 +2,8 @@
 
 ## Supported versions
 
-This policy covers NetSpeed Widget 2.x. Only the latest 2.x release receives security fixes. Use the latest available 2.x build when reporting an issue.
+Only the latest NetSpeed Widget 2.x release receives security fixes. Use that
+version when reporting an issue.
 
 | Version    | Supported |
 | ---------- | --------- |
@@ -32,7 +33,14 @@ Please do not disclose the issue publicly until a fix has been released.
 
 ## Scope notes
 
-NetSpeed Widget runs with your user privileges and stores no secrets: its only local state is a small config file and a log file under `%APPDATA%\NetSpeedWidget`. Reports are in scope when they show behavior beyond what the app legitimately does, such as:
+NetSpeed Widget runs with your user privileges. Its settings and saved speedtest
+result are in `config.json` under `%APPDATA%\NetSpeedWidget`, alongside `log.txt`
+and up to two log backups. Enabling Start with Windows also writes a per-user
+Run entry and can clear its Windows Startup Apps disabled state. The app does
+not store credentials.
+
+Reports are in scope when they show behavior beyond the app's intended actions,
+such as:
 
 - Unsafe path handling when resolving bundled resources or the config and log files
 - Unexpected outbound connections beyond the app's latency probes and speedtest traffic

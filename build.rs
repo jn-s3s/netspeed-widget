@@ -1,8 +1,7 @@
-//! Embeds the application icon and the version metadata into the executable.
+//! Embeds the application icon, manifest and version metadata in Windows builds.
 //!
-//! The same `icon.ico` that the tray icon loads at runtime is compiled into
-//! the binary here, so Explorer shows the right icon for the process and the
-//! user never has to keep a loose file next to the executable.
+//! The window and tray load the embedded icon at runtime, so the executable
+//! does not need a separate icon file.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=icon.ico");

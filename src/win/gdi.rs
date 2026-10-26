@@ -1,10 +1,9 @@
 //! GDI helpers: fonts, glyph masks and the layered-window blit.
 //!
-//! The widget paints into a software canvas and hands the finished buffer to
-//! `UpdateLayeredWindow`, so the only thing GDI is used for is turning text
-//! into a coverage mask. The mask is rendered with grayscale antialiasing
-//! rather than ClearType, because the widget composites its own colours onto
-//! a background it does not control.
+//! GDI measures text and renders grayscale glyph masks for the software canvas.
+//! Grayscale antialiasing avoids ClearType's background-dependent color fringes.
+//! Blit helpers copy the canvas to an opaque details graph or convert it for
+//! `UpdateLayeredWindow` on the layered widget.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -83,7 +82,8 @@ impl Font {
     pub fn handle(&self) -> windows::Win32::Graphics::Gdi::HFONT {
         self.hfont
     }
-    /// The font is retained by its owning panel for the control's lifetime.
+    /// Applies this font to a native control and requests a redraw.
+    /// The caller must keep the font alive for the control's lifetime.
     pub fn apply_to(&self, hwnd: HWND) {
         unsafe {
             windows::Win32::UI::WindowsAndMessaging::SendMessageW(
