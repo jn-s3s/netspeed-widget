@@ -48,22 +48,85 @@ impl Default for LatencyResult {
     }
 }
 
+/// TCP latency at or above this threshold is a warning.
+pub const LATENCY_GOOD_MS: f64 = 80.0;
+
+/// Presentation overrides never change recorded probe health.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DisplayState {
+    Healthy(f64),
+    Slow(f64),
+    Check,
+    Failed,
+    Waiting,
+    Stale,
+    Testing,
+}
+
+impl DisplayState {
+    /// Resolve temporary overrides before considering probe health.
+    pub fn derive(result: LatencyResult, now: f64, testing: bool) -> Self {
+        if testing {
+            Self::Testing
+        } else if result.ts == 0.0 {
+            Self::Waiting
+        } else if now - result.ts > 10.0 {
+            Self::Stale
+        } else if !result.ok {
+            Self::Failed
+        } else {
+            match result.ms {
+                Some(ms) if ms < LATENCY_GOOD_MS => Self::Healthy(ms),
+                Some(ms) => Self::Slow(ms),
+                None => Self::Check,
+            }
+        }
+    }
+
+    /// Short, explicit status for every widget layout.
+    pub fn label(self) -> String {
+        match self {
+            Self::Healthy(ms) => latency_label(ms),
+            Self::Slow(_) => "SLOW".to_string(),
+            Self::Check => "CHECK".to_string(),
+            Self::Failed => "FAIL".to_string(),
+            Self::Waiting | Self::Stale => "—".to_string(),
+            Self::Testing => "TEST".to_string(),
+        }
+    }
+
+    /// Shared hover and details explanation; failure refers only to these probes.
+    pub fn explanation(self) -> String {
+        match self {
+            Self::Healthy(ms) => format!("TCP latency: {ms:.0} ms."),
+            Self::Slow(ms) => {
+                format!("High latency: {ms:.0} ms. Warning threshold: {LATENCY_GOOD_MS:.0} ms.")
+            }
+            Self::Check => {
+                "TCP probe failed; ICMP responded. TCP latency is unavailable.".to_string()
+            }
+            Self::Failed => format!("TCP and ICMP probes to {PING_HOST} failed."),
+            Self::Waiting => "Waiting for a latency result".to_string(),
+            Self::Stale => "Latency result is stale.".to_string(),
+            Self::Testing => {
+                "Speed test running; connection alerts are temporarily suppressed.".to_string()
+            }
+        }
+    }
+}
+
+/// Bounded latency text keeps the reserved status column stable.
+pub fn latency_label(ms: f64) -> String {
+    if ms < 999.5 {
+        format!("{ms:.0} ms")
+    } else {
+        ">1 s".to_string()
+    }
+}
+
 /// Compact readout, independent of window state and wall-clock access.
 pub fn ping_label(result: LatencyResult, now: f64, testing: bool) -> String {
-    if testing {
-        return "Test".to_string();
-    }
-    if result.ts == 0.0 || now - result.ts > 10.0 {
-        return "—".to_string();
-    }
-    if !result.ok {
-        return "Fail".to_string();
-    }
-    match result.ms {
-        Some(ms) if ms < 1000.0 => format!("{ms:.0} ms"),
-        Some(_) => ">1 s".to_string(),
-        None => "ICMP".to_string(),
-    }
+    DisplayState::derive(result, now, testing).label()
 }
 
 /// Measures latency on its own thread.
@@ -212,6 +275,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_threshold_and_overrides_are_independent_of_old_probe_health() {
+        let result = |ms, ok| LatencyResult { ms, ok, ts: 100.0 };
+        assert_eq!(
+            DisplayState::derive(result(Some(79.9), true), 101.0, false),
+            DisplayState::Healthy(79.9)
+        );
+        assert_eq!(
+            DisplayState::derive(result(Some(80.0), true), 101.0, false),
+            DisplayState::Slow(80.0)
+        );
+        assert_eq!(
+            DisplayState::derive(result(None, true), 101.0, false),
+            DisplayState::Check
+        );
+        assert_eq!(
+            DisplayState::derive(result(None, false), 101.0, false),
+            DisplayState::Failed
+        );
+        for probe in [
+            result(Some(120.0), true),
+            result(None, true),
+            result(None, false),
+        ] {
+            assert_eq!(
+                DisplayState::derive(probe, 110.0, true),
+                DisplayState::Testing
+            );
+            assert_eq!(
+                DisplayState::derive(probe, 110.001, false),
+                DisplayState::Stale
+            );
+            assert_eq!(
+                DisplayState::derive(probe, 111.0, true),
+                DisplayState::Testing
+            );
+        }
+        assert_eq!(
+            DisplayState::Slow(120.0).explanation(),
+            "High latency: 120 ms. Warning threshold: 80 ms."
+        );
+        assert_eq!(
+            DisplayState::Check.explanation(),
+            "TCP probe failed; ICMP responded. TCP latency is unavailable."
+        );
+        assert_eq!(
+            DisplayState::Failed.explanation(),
+            "TCP and ICMP probes to 1.1.1.1 failed."
+        );
+        assert_eq!(latency_label(999.49), "999 ms");
+        assert_eq!(latency_label(999.5), ">1 s");
+    }
+
+    #[test]
     fn tcp_and_icmp_probe_the_same_host() {
         assert_eq!(PROBE_ADDRESS.ip().to_string(), PING_HOST);
         assert_eq!(PROBE_ADDRESS.port(), PING_PORT);
@@ -221,10 +337,10 @@ mod tests {
     fn latency_readout_covers_results_staleness_and_testing() {
         let result = |ms, ok| LatencyResult { ms, ok, ts: 100.0 };
         assert_eq!(ping_label(result(Some(25.0), true), 101.0, false), "25 ms");
-        assert_eq!(ping_label(result(Some(1000.0), true), 101.0, false), ">1 s");
-        assert_eq!(ping_label(result(None, true), 101.0, false), "ICMP");
-        assert_eq!(ping_label(result(None, false), 101.0, false), "Fail");
-        assert_eq!(ping_label(result(None, false), 101.0, true), "Test");
+        assert_eq!(ping_label(result(Some(1000.0), true), 101.0, false), "SLOW");
+        assert_eq!(ping_label(result(None, true), 101.0, false), "CHECK");
+        assert_eq!(ping_label(result(None, false), 101.0, false), "FAIL");
+        assert_eq!(ping_label(result(None, false), 101.0, true), "TEST");
         assert_eq!(ping_label(LatencyResult::default(), 101.0, false), "—");
         assert_eq!(ping_label(result(Some(25.0), true), 111.0, false), "—");
         assert_eq!(ping_label(result(Some(25.0), true), 110.0, false), "25 ms");

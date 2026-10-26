@@ -75,6 +75,8 @@ pub struct Config {
     pub subtle_background: bool,
     #[serde(default, deserialize_with = "tolerant")]
     pub graph_fill: bool,
+    #[serde(default = "enabled", deserialize_with = "tolerant_enabled")]
+    pub animate_errors: bool,
     #[serde(
         default,
         deserialize_with = "tolerant",
@@ -162,6 +164,7 @@ impl Default for Config {
             auto_fit: true,
             subtle_background: false,
             graph_fill: false,
+            animate_errors: true,
             speedtest_source: None,
             speedtest: None,
             hotkey: None,
@@ -181,6 +184,7 @@ pub struct DisplayPreferences {
     pub auto_fit: bool,
     pub subtle_background: bool,
     pub graph_fill: bool,
+    pub animate_errors: bool,
 }
 
 pub fn display_preferences() -> DisplayPreferences {
@@ -191,6 +195,7 @@ pub fn display_preferences() -> DisplayPreferences {
         auto_fit: guard.auto_fit,
         subtle_background: guard.subtle_background,
         graph_fill: guard.graph_fill,
+        animate_errors: guard.animate_errors,
     }
 }
 
@@ -200,6 +205,7 @@ pub enum DisplayPreference {
     AutoFit(bool),
     Background(bool),
     Fill(bool),
+    AnimateErrors(bool),
 }
 
 pub fn set_display_preference(preference: DisplayPreference) {
@@ -213,6 +219,7 @@ fn apply_display_preference(config: &mut Config, preference: DisplayPreference) 
         DisplayPreference::AutoFit(value) => config.auto_fit = value,
         DisplayPreference::Background(value) => config.subtle_background = value,
         DisplayPreference::Fill(value) => config.graph_fill = value,
+        DisplayPreference::AnimateErrors(value) => config.animate_errors = value,
     }
 }
 
@@ -511,12 +518,14 @@ mod tests {
         let old: Config = serde_json::from_str(r#"{"theme":"Ocean"}"#).unwrap();
         assert_eq!(old.layout, DisplayLayout::Balanced);
         assert!(old.auto_fit);
+        assert!(old.animate_errors);
         assert_eq!(old.units, SpeedUnits::Bits);
         let config = Config {
             layout: DisplayLayout::Compact,
             units: SpeedUnits::Bytes,
             auto_fit: false,
             graph_fill: true,
+            animate_errors: false,
             subtle_background: true,
             ..Config::default()
         };
@@ -526,6 +535,7 @@ mod tests {
         assert_eq!(restored.units, SpeedUnits::Bytes);
         assert!(!restored.auto_fit);
         assert!(restored.graph_fill && restored.subtle_background);
+        assert!(!restored.animate_errors);
     }
 
     #[test]

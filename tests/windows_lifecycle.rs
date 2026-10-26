@@ -339,6 +339,11 @@ fn widget_embeds_in_taskbar_with_automatic_placement() {
     responsive(widget, WM_NULL);
     let class = wide("NetSpeedWidgetController");
     let controller = unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) }.unwrap();
+    assert_ne!(
+        unsafe { GetWindowLongW(controller, GWL_EXSTYLE) } as u32 & WS_EX_TOPMOST.0,
+        0,
+        "the hidden menu owner must keep settings above the taskbar"
+    );
     let capture = unsafe { GetCapture() };
     responsive(widget, WM_LBUTTONDOWN);
     assert_eq!(

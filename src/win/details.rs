@@ -209,7 +209,7 @@ pub fn toggle(
         .clamp(area.top, (area.bottom - height).max(area.top));
         // Install state after creation; the procedure does not need it during creation.
         match CreateWindowExW(
-            WS_EX_TOOLWINDOW,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             PCWSTR(class.as_ptr()),
             PCWSTR(title.as_ptr()),
             WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
@@ -473,6 +473,11 @@ mod tests {
         assert!(!hwnd.is_invalid());
         unsafe {
             assert!(IsWindowVisible(hwnd).as_bool());
+            assert_ne!(
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0,
+                0,
+                "network details must stack above the taskbar"
+            );
             let body = GetDlgItem(hwnd, 10).unwrap();
             assert_ne!(GetWindowTextLengthW(body), 0);
             let mut next = snapshot();

@@ -71,23 +71,33 @@ If Windows disables the entry, enabling it here clears that disabled state.
 ## Display
 
 The live display uses neutral, semibold values with fixed digit cells and separate
-unit columns. Cyan down arrows and lavender up arrows keep their meaning even
-when a latency probe fails. Fonts, spacing and placement gaps scale with the
-selected taskbar's DPI.
+unit columns. During normal operation, down arrows are cyan and up arrows are
+lavender. Warnings turn all readout text amber; failed probes turn it red. Graph
+colors stay unchanged. Fonts, spacing and placement gaps scale with the selected
+taskbar's DPI.
 
 Choose a Layout from the context menu:
 
-| Layout             | Contents                                     | Width at 100% scaling        |
-| ------------------ | -------------------------------------------- | ---------------------------- |
-| Compact            | Stacked live download and upload             | 128 px                       |
-| Balanced (default) | Stacked speeds, optional graph, probe status | 224 px; 168 px without graph |
-| Single line        | Both speeds and probe status in one row      | 288 px                       |
+| Layout             | Contents                                      |
+| ------------------ | --------------------------------------------- |
+| Compact            | Stacked live download/upload and probe status |
+| Balanced (default) | Stacked speeds, optional graph, probe status  |
+| Single line        | Both speeds and probe status in one row       |
+
+Width is measured from the selected font and DPI, with fixed space reserved for
+all supported rate values, units and status labels. Balanced also shows the
+numeric latency below `SLOW`.
 
 Taskbars shorter than 34 logical pixels use Single line to preserve readability.
 Auto-fit crowded taskbars, enabled by default, lets automatic placement switch
 Balanced to Compact before falling back to the tray. Density changes settle for
 two seconds; expansion also requires extra free-space margin. Numeric updates and
 hovering never change the widget's width.
+
+Animate errors is enabled by default and pulses failed-probe text between two
+opaque red shades. Turn it off for steady red text. The pulse also stops while
+the widget is hidden, when Windows animations are disabled, or in high contrast.
+High contrast uses the system text color for all readouts.
 
 Under Units, choose decimal bits (Kbps/Mbps/Gbps) or bytes (kB/s/MB/s/GB/s).
 Prefixes adapt with hysteresis to avoid boundary flicker. Zero traffic is shown
@@ -144,11 +154,15 @@ vertical taskbars and separate fullscreen-suppression logic are not supported.
 
 Windows IP Helper counters are sampled on a background thread once a second.
 Latency uses a TCP connection to `1.1.1.1:443` every two seconds, with a single
-ICMP ping fallback. Green means healthy, amber means slow or TCP-blocked, and
-red means neither probe reached its target. A red status does not prove that all
-internet access is unavailable. Status uses a localized marker (`!` for warnings and `×` for
-failures); download/upload accents do not change. Health colors are frozen during
-speedtests to avoid recording load-induced latency as an outage.
+ICMP ping fallback. Every layout shows numeric TCP latency below 80 ms, `SLOW`
+at 80 ms or above, `CHECK` when TCP fails but ICMP responds, or `FAIL` when both
+probes fail. A failed probe does not prove that all internet access is unavailable.
+Warnings use amber text and failures use red, except in high contrast. Hover or
+open Network details for an explanation.
+
+The status is `—` before the first result or when the result is more than ten
+seconds old. During speedtests, `TEST` replaces the probe status and suppresses
+alert colors and animation without changing recorded probe health.
 
 Speedtests run manually or every four hours. The app uses a built-in HTTPS
 transfer test against `speed.cloudflare.com`, with no external runtime needed.
