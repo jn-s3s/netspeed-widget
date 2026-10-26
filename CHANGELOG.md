@@ -6,6 +6,19 @@ Pushing a `v*` tag runs the release workflow, which builds the app and drafts a 
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-26
+
+### Added
+
+- Start the widget with Windows from Preferences, with status and errors reported from the startup setting
+- Connection alerts that distinguish slow latency, failed probes, stale results and speedtests
+
+### Changed
+
+- Taskbar placement responds to layout changes and waits briefly before hiding when no safe space is available
+- Reorganized widget and tray menus into Appearance, Taskbar and Preferences sections
+- Smoothed widget text, arrows and graph joins, and improved text rendering in Network details
+
 ## [2.0.0] - 2026-10-21
 
 ### Added
@@ -85,7 +98,8 @@ Initial release of NetSpeed Widget, a small always-on-top Windows widget that sh
 - Logger for diagnostics and troubleshooting
 - Modular code structure with separated concerns
 
-[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.0.0...v1.1.0
