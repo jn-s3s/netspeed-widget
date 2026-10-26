@@ -60,6 +60,7 @@ pub fn key_to_vk(key: &str) -> Option<u32> {
 
 /// Parses `ctrl+shift+n` into `(modifier flags, virtual key code)`.
 ///
+/// # Errors
 /// Returns a message describing the problem when the combo is malformed, uses
 /// an unsupported key, or lacks Ctrl or Alt.
 pub fn parse_hotkey(combo: &str) -> Result<(u32, u32), String> {

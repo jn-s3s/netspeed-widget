@@ -148,7 +148,7 @@ unsafe extern "system" fn taskbar_event(
     }
 }
 
-/// Density changes require a stable candidate, independent of paint frequency.
+/// Waits two seconds for a stable density candidate unless an immediate change is requested.
 #[derive(Default)]
 pub struct DensitySettler {
     pending: Option<(DisplayLayout, Instant)>,
@@ -187,7 +187,7 @@ impl DensitySettler {
     }
 }
 
-/// Apply available positions immediately, but tolerate short-lived layout failures.
+/// Applies available positions immediately and delays hiding for one second after layout failure.
 #[derive(Default)]
 pub struct PlacementSettler {
     pending: Option<(Option<RECT>, Instant)>,
@@ -311,7 +311,7 @@ impl OccupancyProbe {
         }
     }
 
-    /// Coalesce native event bursts, including changes arriving during a scan.
+    /// Coalesces native event bursts, including changes arriving during a scan.
     pub fn invalidate(&mut self) {
         EVENT_TARGET.set(EventTarget {
             posted: false,

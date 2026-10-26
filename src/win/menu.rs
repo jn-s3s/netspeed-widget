@@ -6,9 +6,10 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, TrackPopupMenuEx,
-    HMENU, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, TPM_NONOTIFY,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, PostMessageW, SetForegroundWindow, SetMenuItemInfoW,
+    TrackPopupMenuEx, HMENU, MENUITEMINFOW, MFT_RADIOCHECK, MF_CHECKED, MF_GRAYED, MF_POPUP,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MIIM_FTYPE, TPM_NONOTIFY, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_NULL,
 };
 
 use crate::win::gdi::to_wide;
@@ -21,6 +22,19 @@ pub enum MenuEntry {
     Disabled { label: String },
     /// A command carrying a check mark.
     Check {
+        id: u32,
+        label: String,
+        checked: bool,
+    },
+    /// A toggle that retains its check mark while unavailable.
+    DependentCheck {
+        id: u32,
+        label: String,
+        checked: bool,
+        enabled: bool,
+    },
+    /// One choice in a mutually exclusive group.
+    Radio {
         id: u32,
         label: String,
         checked: bool,
@@ -81,11 +95,27 @@ fn build(entries: &[MenuEntry]) -> Option<HMENU> {
                     let wide = to_wide(label);
                     let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(wide.as_ptr()));
                 }
-                MenuEntry::Check { id, label, checked } => {
+                MenuEntry::Check { id, label, checked }
+                | MenuEntry::DependentCheck {
+                    id, label, checked, ..
+                }
+                | MenuEntry::Radio { id, label, checked } => {
                     let wide = to_wide(label);
-                    let flags = if *checked { MF_CHECKED } else { MF_UNCHECKED };
+                    let mut flags = if *checked { MF_CHECKED } else { MF_UNCHECKED };
+                    if matches!(entry, MenuEntry::DependentCheck { enabled: false, .. }) {
+                        flags |= MF_GRAYED;
+                    }
                     let _ =
                         AppendMenuW(menu, MF_STRING | flags, *id as usize, PCWSTR(wide.as_ptr()));
+                    if matches!(entry, MenuEntry::Radio { .. }) {
+                        let info = MENUITEMINFOW {
+                            cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                            fMask: MIIM_FTYPE,
+                            fType: MFT_RADIOCHECK,
+                            ..Default::default()
+                        };
+                        let _ = SetMenuItemInfoW(menu, *id, false, &info);
+                    }
                 }
                 MenuEntry::Submenu { label, items } => {
                     let submenu = match build(items) {
@@ -98,5 +128,66 @@ fn build(entries: &[MenuEntry]) -> Option<HMENU> {
             }
         }
         Some(menu)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetMenuItemInfoW, GetSubMenu, MFS_CHECKED, MFS_GRAYED, MIIM_STATE,
+    };
+
+    #[test]
+    fn native_menu_preserves_radio_toggle_and_disabled_check_states() {
+        let entries = vec![MenuEntry::Submenu {
+            label: "Options".to_string(),
+            items: vec![
+                MenuEntry::Radio {
+                    id: 1,
+                    label: "Selected".to_string(),
+                    checked: true,
+                },
+                MenuEntry::Radio {
+                    id: 2,
+                    label: "Other".to_string(),
+                    checked: false,
+                },
+                MenuEntry::Check {
+                    id: 3,
+                    label: "Toggle".to_string(),
+                    checked: true,
+                },
+                MenuEntry::DependentCheck {
+                    id: 4,
+                    label: "Unavailable".to_string(),
+                    checked: true,
+                    enabled: false,
+                },
+                MenuEntry::DependentCheck {
+                    id: 5,
+                    label: "Available".to_string(),
+                    checked: false,
+                    enabled: true,
+                },
+            ],
+        }];
+        let menu = build(&entries).unwrap();
+        // SAFETY: Both handles refer to live menus built above; info has the required size.
+        unsafe {
+            let submenu = GetSubMenu(menu, 0);
+            for id in 1..=5 {
+                let mut info = MENUITEMINFOW {
+                    cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+                    fMask: MIIM_FTYPE | MIIM_STATE,
+                    ..Default::default()
+                };
+                GetMenuItemInfoW(submenu, id, false, &mut info).unwrap();
+                assert_eq!(info.fType.contains(MFT_RADIOCHECK), id <= 2);
+                assert_eq!(info.fState.contains(MFS_CHECKED), matches!(id, 1 | 3 | 4));
+                assert_eq!(info.fState.0 & MFS_GRAYED.0 != 0, id == 4);
+            }
+            DestroyMenu(menu).unwrap();
+        }
     }
 }

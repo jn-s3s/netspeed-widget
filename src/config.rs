@@ -1,12 +1,12 @@
-//! Persistent user settings held in one JSON file.
+//! User settings stored in a cached JSON file.
 //!
-//! The file is read once and cached, then written through on every change.
-//! A save writes a sibling file and renames it into place, so a reader never
-//! observes a truncated config.
+//! Changes update the cache and attempt to save through a sibling file that is
+//! renamed into place. Save failures are logged and leave the old file intact.
 //!
-//! A file that cannot be parsed, or that holds a value of the wrong type, is
-//! reported and then treated as absent, so one bad edit degrades to defaults
-//! instead of preventing startup.
+//! Missing or mistyped fields use defaults without discarding valid fields.
+//! An unreadable file or invalid JSON is logged and uses display defaults.
+//! Before accepting a change after a load failure, the cache retries the read;
+//! it refuses the change if the file still cannot be loaded.
 
 use std::fs;
 use std::sync::{Mutex, OnceLock};
@@ -62,7 +62,7 @@ pub struct SpeedtestRecord {
     pub ts: f64,
 }
 
-/// The settings file, with every field optional so a partial file is valid.
+/// Settings whose fields accept missing or mistyped values by using defaults.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default, deserialize_with = "tolerant")]
@@ -253,7 +253,10 @@ fn cache() -> &'static Mutex<CachedConfig> {
     })
 }
 
-/// Reads the settings file, reporting and discarding an unusable one.
+/// Loads settings, using defaults for a missing file and logging other failures.
+///
+/// # Errors
+/// Returns an error if the file cannot be read or parsed as settings JSON.
 fn load(path: &std::path::Path) -> Result<Config, String> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -320,7 +323,7 @@ fn remove_staging_file(path: &std::path::Path) {
     }
 }
 
-/// Runs `apply` on the cached settings and writes the result back.
+/// Applies and saves a change only after establishing a readable settings baseline.
 fn mutate(apply: impl FnOnce(&mut Config)) {
     let mut guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     mutate_cached(&mut guard, &config_path(CONFIG_FILE), apply);
@@ -363,7 +366,8 @@ pub fn set_theme(name: &str) {
     mutate(|config| config.theme = Some(name.to_string()));
 }
 
-/// The global show/hide hotkey combo, or the default when unusable.
+/// Returns the saved show/hide shortcut, or the default if missing or blank.
+/// Parsing and registration are handled by the caller.
 pub fn hotkey() -> String {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     match guard.hotkey.as_deref() {
@@ -377,13 +381,14 @@ pub fn set_hotkey(combo: &str) {
     mutate(|config| config.hotkey = Some(combo.to_string()));
 }
 
-/// The last persisted speedtest, if there is a usable one.
+/// Returns the cached speedtest record, if present.
 pub fn speedtest() -> Option<SpeedtestRecord> {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.speedtest
 }
 
-/// Persists a compact speedtest snapshot and returns what was stored.
+/// Rounds rates to two decimals, timestamps the result and attempts to save it.
+/// Returns the record even if saving fails.
 pub fn set_speedtest(down_mbps: f64, up_mbps: f64) -> SpeedtestRecord {
     let record = SpeedtestRecord {
         down_mbps: (down_mbps * 100.0).round() / 100.0,
@@ -405,7 +410,7 @@ pub fn set_placement(placement: Placement) {
     mutate(|config| config.placement = Some(placement));
 }
 
-/// Whether the traffic graph is drawn.
+/// Returns the graph visibility preference; the effective layout may hide it.
 pub fn show_graph() -> bool {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.show_graph.unwrap_or(true)
@@ -416,7 +421,7 @@ pub fn set_show_graph(value: bool) {
     mutate(|config| config.show_graph = Some(value));
 }
 
-/// Whether the taskbar widget is visible.
+/// Returns the visibility preference; lack of taskbar space may hide the widget.
 pub fn widget_visible() -> bool {
     let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
     guard.widget_visible.unwrap_or(true)

@@ -214,8 +214,9 @@ fn enabled_at(
 /// Registers the current executable or removes only this app's Run entry.
 ///
 /// # Errors
-/// Returns registry/path errors. If resetting approval fails, restores the old Run value;
-/// any rollback failure is included in the error rather than hidden.
+/// Returns an error if the executable path or registry update fails. If resetting
+/// approval fails, attempts to restore the old Run value and includes any rollback
+/// failure in the error.
 pub fn set_enabled(enable: bool) -> Result<(), String> {
     if !enable {
         if let Some(run) = Key::open(RUN_KEY, KEY_SET_VALUE)? {

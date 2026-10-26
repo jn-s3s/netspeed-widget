@@ -1,14 +1,12 @@
 //! A small software rasterizer for the taskbar widget.
 //!
-//! The widget is a layered window, so every pixel carries its own alpha.
-//! GDI cannot draw into a 32-bit DIB with meaningful alpha, which is why the
-//! widget is composited here instead: shapes are drawn into an RGBA buffer
-//! with analytic antialiasing, text is blended in from a glyph mask, and the
-//! finished buffer is handed to `UpdateLayeredWindow` as premultiplied BGRA.
+//! The layered widget needs per-pixel alpha that ordinary GDI drawing does not
+//! preserve. Shapes use analytic antialiasing and text is blended from glyph
+//! masks into a premultiplied RGBA buffer with `u8` channels. The GDI helper
+//! converts it to premultiplied BGRA for `UpdateLayeredWindow`.
 //!
-//! The buffer keeps premultiplied RGBA in `u8` channels. Premultiplication
-//! is what `UpdateLayeredWindow` expects, and it makes "over" compositing a
-//! straight lerp without a second unpremultiply pass.
+//! Premultiplied channels allow source-over compositing without unpremultiplying
+//! the destination for each pixel.
 
 /// A straight (non-premultiplied) colour with an alpha channel.
 #[derive(Clone, Copy, Debug)]
@@ -40,7 +38,8 @@ impl Color {
         }
     }
 
-    /// Parses a `#rrggbb` string, falling back to opaque black.
+    /// Parses a `#rrggbb` string, allowing surrounding whitespace and an omitted `#`.
+    /// Invalid length or non-ASCII input yields opaque black; invalid channel pairs yield zero.
     pub fn from_hex(hex: &str) -> Self {
         let hex = hex.trim().trim_start_matches('#');
         if hex.len() != 6 || !hex.is_ascii() {
@@ -78,7 +77,7 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    /// Creates a fully transparent canvas.
+    /// Creates a transparent canvas, clamping each dimension to at least one pixel.
     pub fn new(width: i32, height: i32) -> Self {
         let width = width.max(1);
         let height = height.max(1);
@@ -135,8 +134,7 @@ impl Canvas {
 
     /// Fills or strokes a rounded rectangle.
     ///
-    /// The signed distance to the shape drives the coverage, so both the fill
-    /// and the outline are antialiased without a single bitmap.
+    /// The signed distance to the shape determines edge coverage for both fill and outline.
     fn paint_rounded_rect(&mut self, rect: Rect, radius: f32, stroke: f32, color: Color) {
         let radius = radius.max(0.0).min(rect.width * 0.5).min(rect.height * 0.5);
         let cx = rect.x + rect.width * 0.5;

@@ -1,15 +1,13 @@
-//! Latency probing.
+//! Background TCP latency probes with an ICMP fallback.
 //!
-//! A TCP handshake to a well-known host is a solid latency estimate and is
-//! far cheaper than spawning `ping.exe` every second. A single ICMP ping is
-//! kept as a second opinion, used only when TCP fails, to tell a real outage
-//! apart from a blocked port.
+//! Each cycle times a TCP connection to `1.1.1.1:443`. If it fails, one ICMP
+//! echo through the Windows system `ping.exe` checks whether the host responds
+//! over ICMP. The fallback records reachability, not a latency value.
 //!
-//! The target is an anycast address rather than a hostname. Anycast means the
-//! packet is answered by the nearest of thousands of identical endpoints, so
-//! the number tracks the distance to the ISP instead of the load-balancing
-//! choice of one CDN, and an IP literal skips the DNS lookup that would
-//! otherwise fold resolver latency into every reading.
+//! The IP literal avoids DNS lookup time. Results describe these probes to one
+//! anycast destination; they do not establish whether all Internet access works
+//! or measure latency to the ISP alone. The worker waits for its configured
+//! interval after each result.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,8 +27,9 @@ const PROBE_ADDRESS: SocketAddr =
 
 /// One latency measurement.
 ///
-/// `ms` is `None` when TCP failed but ICMP still reached the host. `ok` is
-/// `false` when every probe failed, meaning likely offline.
+/// `ms` is present only after a successful TCP connection. `ok` is true if TCP
+/// or ICMP succeeded. Before the first probe, the default has `ts == 0.0`;
+/// it does not describe connectivity.
 #[derive(Clone, Copy, Debug)]
 pub struct LatencyResult {
     pub ms: Option<f64>,
@@ -64,7 +63,7 @@ pub enum DisplayState {
 }
 
 impl DisplayState {
-    /// Resolve temporary overrides before considering probe health.
+    /// Resolves testing, waiting and stale states before considering probe health.
     pub fn derive(result: LatencyResult, now: f64, testing: bool) -> Self {
         if testing {
             Self::Testing
@@ -169,7 +168,7 @@ impl LatencyProbe {
         }
     }
 
-    /// Signals the probe thread to exit.
+    /// Requests shutdown without waiting for an in-flight network probe to finish.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         let mut worker = self.worker.lock().unwrap_or_else(|err| err.into_inner());

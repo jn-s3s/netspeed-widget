@@ -1,11 +1,11 @@
 //! Background network throughput sampling.
 //!
-//! Sampling runs on its own thread so the UI thread never blocks on a
-//! counter query. The UI reads the latest immutable snapshot through a lock,
-//! which keeps every widget update on the UI thread.
+//! A worker queries counters and updates a locked sample history. The UI copies
+//! snapshots from that history without waiting for a counter query.
 //!
-//! The counters come from the IP helper, so the numbers are the system's own
-//! per-interface octet totals rather than anything this app counts itself.
+//! Windows IP Helper supplies cumulative octet totals, summed across every
+//! interface. Traffic reported on multiple interfaces can be counted more than
+//! once; the totals are not restricted to Internet traffic.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,7 +90,7 @@ impl NetSampler {
         }
     }
 
-    /// Signals the sampling thread to exit.
+    /// Requests shutdown and waits for the sampling thread to exit.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         let mut worker = self.worker.lock().unwrap_or_else(|err| err.into_inner());
@@ -113,7 +113,7 @@ impl NetSampler {
         state.samples.iter().copied().collect()
     }
 
-    /// Total `(download, upload)` in megabytes since start.
+    /// Returns `(download, upload)` in decimal megabytes since the first baseline.
     pub fn session_totals(&self) -> (f64, f64) {
         let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
         (
@@ -169,13 +169,13 @@ fn record_sample(
     guard.last_ts = Some(now);
 }
 
-/// Cumulative octets, named so download and upload cannot be confused.
+/// Cumulative received and sent octets summed across interfaces.
 pub struct NetworkCounters {
     pub received: u64,
     pub sent: u64,
 }
 
-/// Reads the current octet totals of every interface.
+/// Sums octet totals across every interface, returning `None` if the query fails.
 pub fn read_network_counters() -> Option<NetworkCounters> {
     // SAFETY: GetIfTable2 initializes the table pointer. A successful allocation
     // contains NumEntries rows, borrowed only until its matching FreeMibTable.

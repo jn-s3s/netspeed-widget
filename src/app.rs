@@ -1,9 +1,9 @@
-//! The application: the taskbar widget, the tray icon and the services
-//! behind them.
+//! UI controller for the taskbar widget, tray icon and background measurements.
 //!
 //! The controller owns timers, the global hotkey and the tray icon. The widget
-//! is a non-activating child of Explorer's taskbar. All application state and window calls stay on the UI
-//! thread; workers publish network results through messages or snapshots.
+//! is a non-activating child of Explorer's taskbar. Application state and widget
+//! window calls stay on the UI thread. Measurement workers publish messages or
+//! snapshots; taskbar occupancy queries run on a separate worker.
 
 use crate::clock::now_epoch;
 use netspeed_widget::commands::*;
@@ -58,7 +58,7 @@ use crate::win::taskbar::{self, TaskbarWindow};
 use crate::win::tray::{TrayIcon, TRAY_CALLBACK};
 use crate::win::{appearance::Appearance, details, tooltip::Tooltip};
 
-/// Custom message carrying a background result to the UI thread.
+/// Notifies the UI thread that the speedtest result slot is ready to read.
 const WM_APP_SPEEDTEST: u32 = WM_APP + 1;
 
 /// Timer that refreshes the widget.
@@ -80,7 +80,7 @@ const GRAPH_SAMPLES: usize = 60;
 const SPEEDTEST_INTERVAL_SEC: f64 = 4.0 * 60.0 * 60.0;
 /// Delay before the first automatic speedtest after a fresh start.
 const SPEEDTEST_STARTUP_GRACE_SEC: f64 = 20.0;
-/// Delay before a failed speedtest is retried.
+/// Delay before retrying a failed speedtest or a passive estimate.
 const SPEEDTEST_RETRY_SEC: f64 = 15.0 * 60.0;
 /// Identifier of the global hotkey registration.
 const HOTKEY_ID: i32 = 1;
@@ -479,7 +479,7 @@ fn create_widget(hinstance: HINSTANCE, class: &[u16]) {
     }
 }
 
-/// Re-evaluate the saved monitor preference even while a fallback remains valid.
+/// Re-evaluates the saved monitor preference even while a fallback remains valid.
 fn preferred_taskbar() -> Option<TaskbarWindow> {
     let taskbars = taskbar::find_taskbars();
     let wanted = config::taskbar_monitor();
@@ -569,8 +569,12 @@ fn position_widget(state: &mut AppState) {
         sync_widget_visibility(state);
         return;
     };
-    let taskbar_height = rect.bottom - rect.top;
-    let height = taskbar_height.max(1);
+    let Some(widget_rect) = taskbar::widget_rect(rect) else {
+        state.placement_available = false;
+        sync_widget_visibility(state);
+        return;
+    };
+    let height = widget_rect.bottom - widget_rect.top;
     let dpi = unsafe { GetDpiForWindow(taskbar.hwnd) }.max(96);
     let desired = paint::effective_layout(state.layout, height, dpi);
     let geometry_changed = dpi != state.dpi || height != state.height;
@@ -655,13 +659,16 @@ fn position_widget(state: &mut AppState) {
     });
     let target = x.map(|x| RECT {
         left: x,
-        top: rect.top,
+        top: widget_rect.top,
         right: x + width,
-        bottom: rect.bottom,
+        bottom: widget_rect.bottom,
     });
     // Explicit placement changes clear placed_for and take effect immediately.
     let same_geometry = state.placed_for.is_some_and(|r| {
-        r.top == rect.top && r.bottom == rect.bottom && r.left >= rect.left && r.right <= rect.right
+        r.top == widget_rect.top
+            && r.bottom == widget_rect.bottom
+            && r.left >= rect.left
+            && r.right <= rect.right
     });
     if same_geometry {
         if !state
@@ -684,7 +691,7 @@ fn position_widget(state: &mut AppState) {
         sync_widget_visibility(state);
         return;
     }
-    let y = rect.top;
+    let y = target.top;
     let Some(origin) = taskbar::client_point(taskbar.hwnd, POINT { x, y }) else {
         state.placed_for = None;
         state.placement_available = false;
@@ -866,7 +873,7 @@ fn start_speedtest(manual: bool) {
     }
 }
 
-/// The result of the last finished speedtest.
+/// Shared slot for a worker's speedtest result, read on completion notification.
 fn pending_result() -> &'static Mutex<Option<SpeedtestResult>> {
     static RESULT: OnceLock<Mutex<Option<SpeedtestResult>>> = OnceLock::new();
     RESULT.get_or_init(|| Mutex::new(None))
@@ -1184,7 +1191,7 @@ fn set_hovering(hovering: bool) {
     render(state);
 }
 
-/// The UI refresh.
+/// Handles refresh, recovery, placement-retry and failure-pulse timers.
 fn tick(timer: usize) {
     match timer {
         TIMER_FAILURE_PULSE => {
@@ -1340,7 +1347,7 @@ fn apply_sample(state: &mut AppState, sample: NetSample) {
     }
 }
 
-/// Records the health of the latest latency reading.
+/// Updates display health from the latest probe, holding it steady during speedtests.
 fn apply_latency(state: &mut AppState) {
     let result = state.probe.latest();
     if result.ts == 0.0 {
@@ -1688,10 +1695,22 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         id: CMD_DETAILS,
         label: "Network details".to_string(),
     });
+    entries.push(MenuEntry::Check {
+        id: CMD_TOGGLE_VISIBILITY,
+        label: "Show widget".to_string(),
+        checked: state.widget_visible,
+    });
+    if state.widget_visible && !state.placement_available {
+        entries.push(MenuEntry::Disabled {
+            label: "Taskbar space unavailable—tray only".to_string(),
+        });
+    }
+    entries.push(MenuEntry::Separator);
+    let mut appearance = Vec::new();
     let themes: Vec<MenuEntry> = theme::theme_names()
         .iter()
         .enumerate()
-        .map(|(index, name)| MenuEntry::Check {
+        .map(|(index, name)| MenuEntry::Radio {
             id: CMD_THEME_BASE + index as u32,
             label: if *name == theme::DEFAULT_THEME {
                 "Follow Windows (transparent)".to_string()
@@ -1701,17 +1720,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             checked: *name == state.theme_name,
         })
         .collect();
-    entries.push(MenuEntry::Submenu {
-        label: "Theme".to_string(),
-        items: themes,
-    });
-
-    entries.push(MenuEntry::Check {
-        id: CMD_TOGGLE_GRAPH,
-        label: "Show traffic graph".to_string(),
-        checked: state.show_graph,
-    });
-    entries.push(MenuEntry::Submenu {
+    appearance.push(MenuEntry::Submenu {
         label: "Layout".to_string(),
         items: [
             DisplayLayout::Compact,
@@ -1719,7 +1728,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             DisplayLayout::SingleLine,
         ]
         .iter()
-        .map(|layout| MenuEntry::Check {
+        .map(|layout| MenuEntry::Radio {
             id: match layout {
                 DisplayLayout::Compact => CMD_LAYOUT_COMPACT,
                 DisplayLayout::Balanced => CMD_LAYOUT_BALANCED,
@@ -1727,12 +1736,13 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             },
             label: match layout {
                 DisplayLayout::Compact => "Compact",
-                DisplayLayout::Balanced => "Balanced (recommended)",
+                DisplayLayout::Balanced => "Balanced",
                 DisplayLayout::SingleLine => "Single line",
             }
             .to_string(),
             checked: state.layout == *layout,
         })
+        .chain(std::iter::once(MenuEntry::Separator))
         .chain(std::iter::once(MenuEntry::Check {
             id: CMD_AUTO_FIT,
             label: "Auto-fit crowded taskbars".to_string(),
@@ -1740,58 +1750,73 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         }))
         .collect(),
     });
-    entries.push(MenuEntry::Submenu {
+    appearance.push(MenuEntry::Submenu {
         label: "Units".to_string(),
         items: vec![
-            MenuEntry::Check {
+            MenuEntry::Radio {
                 id: CMD_UNITS_BITS,
                 label: "Bits (Kbps / Mbps / Gbps)".to_string(),
                 checked: state.units == SpeedUnits::Bits,
             },
-            MenuEntry::Check {
+            MenuEntry::Radio {
                 id: CMD_UNITS_BYTES,
-                label: "Bytes (kB/s / MB/s / GB/s, decimal)".to_string(),
+                label: "Bytes (kB/s / MB/s / GB/s)".to_string(),
                 checked: state.units == SpeedUnits::Bytes,
             },
         ],
     });
-    entries.push(MenuEntry::Check {
-        id: CMD_SUBTLE_BACKGROUND,
-        label: "Subtle background (Follow Windows)".to_string(),
-        checked: state.subtle_background,
+    appearance.push(MenuEntry::Submenu {
+        label: "Theme".to_string(),
+        items: themes,
     });
-    entries.push(MenuEntry::Check {
+    appearance.push(MenuEntry::DependentCheck {
+        id: CMD_SUBTLE_BACKGROUND,
+        label: "Subtle background".to_string(),
+        checked: state.subtle_background,
+        enabled: state.theme_name == theme::DEFAULT_THEME,
+    });
+    appearance.push(MenuEntry::Separator);
+    appearance.push(MenuEntry::DependentCheck {
+        id: CMD_TOGGLE_GRAPH,
+        label: if state.layout != DisplayLayout::Balanced {
+            "Show traffic graph (requires Balanced layout)"
+        } else if state.effective_layout != DisplayLayout::Balanced {
+            "Show traffic graph (unavailable at current taskbar size)"
+        } else {
+            "Show traffic graph"
+        }
+        .to_string(),
+        checked: state.show_graph,
+        enabled: state.layout == DisplayLayout::Balanced
+            && state.effective_layout == DisplayLayout::Balanced,
+    });
+    appearance.push(MenuEntry::Check {
         id: CMD_GRAPH_FILL,
         label: "Shade download area".to_string(),
         checked: state.graph_fill,
     });
-    entries.push(MenuEntry::Check {
+    appearance.push(MenuEntry::Check {
         id: CMD_ANIMATE_ERRORS,
-        label: "Animate errors".to_string(),
+        label: "Animate error indicator".to_string(),
         checked: state.animate_errors,
     });
 
-    let placement_items = vec![
-        MenuEntry::Check {
+    entries.push(MenuEntry::Submenu {
+        label: "Appearance".to_string(),
+        items: appearance,
+    });
+    let mut taskbar_items = vec![
+        MenuEntry::Radio {
             id: CMD_PLACEMENT_TRAY,
-            label: "Next to the notification area".to_string(),
+            label: "Next to notification area".to_string(),
             checked: state.placement == Placement::Tray,
         },
-        MenuEntry::Check {
+        MenuEntry::Radio {
             id: CMD_PLACEMENT_LEFT,
             label: "Prefer left side".to_string(),
             checked: state.placement == Placement::Left,
         },
     ];
-    entries.push(MenuEntry::Submenu {
-        label: "Placement".to_string(),
-        items: placement_items,
-    });
-    if state.widget_visible && !state.placement_available {
-        entries.push(MenuEntry::Disabled {
-            label: "Taskbar space unavailable (tray only)".to_string(),
-        });
-    }
 
     let taskbars = taskbar::find_taskbars();
     state.menu_devices = taskbars.iter().map(taskbar::monitor_device).collect();
@@ -1806,7 +1831,7 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                     Some(device) => format!("Display {device}"),
                     None => format!("Display {}", index + 1),
                 };
-                MenuEntry::Check {
+                MenuEntry::Radio {
                     id: CMD_TASKBAR_BASE + index as u32,
                     label,
                     checked: if current.is_some() {
@@ -1817,23 +1842,18 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                 }
             })
             .collect();
-        entries.push(MenuEntry::Submenu {
+        taskbar_items.push(MenuEntry::Separator);
+        taskbar_items.push(MenuEntry::Submenu {
             label: "Display".to_string(),
             items,
         });
     }
 
-    entries.push(MenuEntry::Command {
-        id: CMD_CHANGE_HOTKEY,
-        label: hotkey_label(state.hotkey_ok, &state.hotkey_combo),
+    entries.push(MenuEntry::Submenu {
+        label: "Taskbar".to_string(),
+        items: taskbar_items,
     });
-    entries.push(MenuEntry::Separator);
-    entries.push(MenuEntry::Check {
-        id: CMD_TOGGLE_VISIBILITY,
-        label: "Show widget".to_string(),
-        checked: state.widget_visible,
-    });
-    entries.push(match startup::enabled() {
+    let startup = match startup::enabled() {
         Ok(checked) => MenuEntry::Check {
             id: CMD_TOGGLE_AUTOSTART,
             label: "Start with Windows".to_string(),
@@ -1845,7 +1865,18 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                 label: "Start with Windows (registry unavailable)".to_string(),
             }
         }
+    };
+    entries.push(MenuEntry::Submenu {
+        label: "Preferences".to_string(),
+        items: vec![
+            startup,
+            MenuEntry::Command {
+                id: CMD_CHANGE_HOTKEY,
+                label: hotkey_label(state.hotkey_ok, &state.hotkey_combo),
+            },
+        ],
     });
+    entries.push(MenuEntry::Separator);
     entries.push(MenuEntry::Command {
         id: CMD_QUIT,
         label: "Quit".to_string(),

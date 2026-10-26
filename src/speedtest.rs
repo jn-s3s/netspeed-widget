@@ -1,12 +1,11 @@
-//! Speedtest measurement with HTTP and passive-estimate backends.
+//! HTTPS throughput tests with a passive system-counter fallback.
 //!
-//! Providers are tried in order and the first successful result wins:
+//! The active test downloads and uploads data at `speed.cloudflare.com`. If
+//! either direction fails, a ten-second counter sample can supply a passive
+//! estimate when at least one direction averages 1 Mbps or more.
 //!
-//! 1. a plain HTTP transfer test
-//! 2. a passive estimate from the system counter deltas
-//!
-//! The HTTP provider measures the link, while the passive provider observes
-//! incidental traffic and returns `None` unless it saw a real load.
+//! Active results measure throughput to that service. Passive results describe
+//! incidental traffic across interfaces and must not be saved as measurements.
 
 use std::io::Read;
 use std::time::{Duration, Instant};
@@ -18,12 +17,12 @@ use crate::sampler::read_network_counters;
 const PASSIVE_SAMPLE_SEC: u64 = 10;
 /// The passive estimate reports nothing below this rate.
 const PASSIVE_MIN_MBPS: f64 = 1.0;
-/// How many bytes the HTTP download test pulls.
+/// Requested download payload size in bytes.
 const HTTP_DOWNLOAD_BYTES: u64 = 25_000_000;
 /// Maximum bytes the HTTP upload test pushes after its small calibration.
 const HTTP_UPLOAD_BYTES: usize = 8 * 1024 * 1024;
 const HTTP_UPLOAD_PROBE_BYTES: usize = 256 * 1024;
-/// The smallest transfer that counts as a measurement.
+/// Minimum received bytes needed for a download measurement.
 const HTTP_MIN_BYTES: u64 = 1_000_000;
 
 /// Provenance of the HTTP backend.
@@ -31,11 +30,10 @@ pub const SOURCE_HTTP: &str = "http-transfer";
 /// Provenance of the passive estimate.
 pub const SOURCE_PASSIVE: &str = "passive-estimate";
 
-/// Measured throughput in megabits per second, with its provenance.
+/// Active throughput or a passive estimate in megabits per second.
 ///
-/// `source` names the provider that produced the number. Only
-/// [`SOURCE_PASSIVE`] is an observation of incidental traffic rather than a
-/// measurement, which is what tells the caller whether to persist it.
+/// `source` identifies the backend. [`SOURCE_PASSIVE`] marks incidental traffic;
+/// callers use [`SpeedtestResult::measured`] to decide whether to persist it.
 #[derive(Clone, Debug)]
 pub struct SpeedtestResult {
     pub down_mbps: f64,
@@ -44,15 +42,16 @@ pub struct SpeedtestResult {
 }
 
 impl SpeedtestResult {
-    /// True when a provider probed the link rather than watched it.
+    /// Returns whether the source is anything other than [`SOURCE_PASSIVE`].
     pub fn measured(&self) -> bool {
         self.source != SOURCE_PASSIVE
     }
 }
 
-/// Tries each provider in order and returns the first success.
+/// Tries the HTTPS test, then the passive estimate, returning the first result.
 ///
-/// Returns the list of providers that were tried when every one failed.
+/// # Errors
+/// Returns a message listing the attempted backends if neither produces a result.
 pub fn measure_speed() -> Result<SpeedtestResult, String> {
     let mut tried: Vec<&str> = Vec::new();
     if let Some(result) = measure_http() {
@@ -71,7 +70,7 @@ pub fn measure_speed() -> Result<SpeedtestResult, String> {
     ))
 }
 
-/// Measures with a plain HTTP transfer against a public speed test host.
+/// Measures download and upload throughput over HTTPS at `speed.cloudflare.com`.
 fn measure_http() -> Option<SpeedtestResult> {
     logger::info("speedtest", "backend: http transfer test");
     let down = match http_download_speed() {
@@ -95,11 +94,13 @@ fn measure_http() -> Option<SpeedtestResult> {
     })
 }
 
-/// Downloads a fixed payload and reports the rate it arrived at.
+/// Requests a fixed payload and divides received bits by elapsed seconds.
 ///
-/// A transfer that runs into the deadline still counts: what arrived in the
-/// time is a valid measurement, and throwing it away would lose the result
-/// on a slow link.
+/// A read failure still yields a result if at least [`HTTP_MIN_BYTES`] arrived.
+/// Elapsed time includes connection setup and any wait before a read failure.
+///
+/// # Errors
+/// Returns an error if the request fails or fewer than [`HTTP_MIN_BYTES`] arrive.
 fn http_download_speed() -> Result<f64, String> {
     let url = format!("https://speed.cloudflare.com/__down?bytes={HTTP_DOWNLOAD_BYTES}");
     let agent = ureq::AgentBuilder::new()
@@ -139,6 +140,12 @@ fn http_download_speed() -> Result<f64, String> {
 }
 
 /// Calibrates with a small upload before choosing a roughly four-second payload.
+///
+/// Uploads 256 KiB first, then up to 8 MiB more. If the second upload fails,
+/// the completed calibration supplies the result.
+///
+/// # Errors
+/// Returns an error if the calibration upload fails.
 fn http_upload_speed() -> Result<f64, String> {
     let url = "https://speed.cloudflare.com/__up";
     let agent = ureq::AgentBuilder::new()
@@ -176,10 +183,10 @@ fn adaptive_upload_speed(
     }
 }
 
-/// Estimates throughput from the system counters, only when real traffic ran.
+/// Estimates throughput from counter deltas over ten seconds.
 ///
-/// Returns `None` on an idle window. Counting bytes that nobody asked to
-/// move would otherwise publish a near-zero figure as the user's line rate.
+/// Returns `None` if either counter read fails or both directions average less
+/// than [`PASSIVE_MIN_MBPS`]. This observes existing traffic without generating a load.
 fn measure_passive_estimate() -> Option<SpeedtestResult> {
     logger::info(
         "speedtest",

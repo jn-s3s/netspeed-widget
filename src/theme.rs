@@ -1,8 +1,7 @@
-//! Color palettes, system appearance and localized latency status colors.
+//! Color palettes, Windows appearance overrides and probe alert colors.
 //!
-//! The palette lives in one place because the widget, the graph and the menus
-//! all paint with the same colours, and a theme change has to land in one
-//! place.
+//! The widget and details graph share palette rules. Native menus use Windows
+//! styling. High-contrast settings override the selected preset.
 
 use std::sync::LazyLock;
 
@@ -48,10 +47,7 @@ fn default_palette() -> Palette {
     value
 }
 
-/// Builds a palette while keeping the health colours semantically consistent.
-///
-/// A palette names every colour it uses, so the argument list is long by
-/// nature rather than by accident.
+/// Builds a palette with health colors chosen for a light or dark background.
 #[expect(
     clippy::too_many_arguments,
     reason = "palette presets specify each named color and the light-mode flag"

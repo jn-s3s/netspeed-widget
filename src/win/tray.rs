@@ -1,7 +1,7 @@
 //! The notification area icon.
 //!
-//! The tray icon is the app's only always-visible handle once the widget is
-//! hidden, so it carries the same menu as the widget itself.
+//! The icon provides the same menu as the widget, including when taskbar
+//! placement is unavailable or the user has hidden the widget.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::{

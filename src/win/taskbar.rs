@@ -156,6 +156,12 @@ pub fn taskbar_rect(hwnd: HWND) -> Option<RECT> {
     window_rect(hwnd)
 }
 
+/// Leave Explorer's top separator uncovered by one physical pixel at every DPI.
+pub(crate) fn widget_rect(bar: RECT) -> Option<RECT> {
+    let top = bar.top.checked_add(1)?;
+    (top < bar.bottom).then_some(RECT { top, ..bar })
+}
+
 /// The state a descendant search carries.
 struct DescendantSearch<'a> {
     classes: &'a [&'a str],
@@ -239,4 +245,41 @@ pub fn monitor_device(taskbar: &TaskbarWindow) -> Option<String> {
 /// Whether a window still exists.
 pub fn is_window(hwnd: HWND) -> bool {
     unsafe { IsWindow(hwnd).as_bool() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn widget_bounds_preserve_one_physical_pixel_and_the_bottom_edge() {
+        // Physical heights representative of several DPI settings and monitors.
+        for (top, height) in [(1000, 48), (1000, 60), (-1440, 72), (-2160, 96), (0, 2)] {
+            let bar = RECT {
+                left: -1920,
+                top,
+                right: 0,
+                bottom: top + height,
+            };
+            let widget = widget_rect(bar).expect("room below the separator");
+            assert_eq!(widget.top, bar.top + 1);
+            assert_eq!(widget.bottom, bar.bottom);
+            assert_eq!(widget.left, bar.left);
+            assert_eq!(widget.right, bar.right);
+            assert_eq!(widget.bottom - widget.top, height - 1);
+        }
+    }
+
+    #[test]
+    fn widget_bounds_reject_taskbars_without_room_below_the_separator() {
+        for (top, bottom) in [(0, 1), (0, 0), (1, 0), (i32::MAX, i32::MAX)] {
+            assert!(widget_rect(RECT {
+                left: 0,
+                top,
+                right: 1920,
+                bottom,
+            })
+            .is_none());
+        }
+    }
 }

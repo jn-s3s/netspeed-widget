@@ -3,9 +3,9 @@
 ## Setup and checks
 
 Use Windows with the stable Rust toolchain pinned in `rust-toolchain.toml` (MSVC),
-Visual Studio C++ build tools and the Windows SDK. Rustup uses the same compiler,
-rustfmt and Clippy versions locally and in CI. Run `cargo run --locked` to start
-the widget. Format changes with `cargo fmt --all`. Before opening a pull request:
+Visual Studio C++ build tools and the Windows SDK. Rustup installs the compiler,
+rustfmt and Clippy versions used in CI. Start the widget with `cargo run --locked`
+and format changes with `cargo fmt --all`. Before opening a pull request, run:
 
 ```powershell
 cargo fmt --all -- --check
@@ -67,10 +67,15 @@ which extensions are installed.
   intentional result discards; reserve panics for proven invariants and tests.
 - Document public APIs and unsafe preconditions. Use explicit unsafe blocks even
   inside unsafe functions, with a `SAFETY` comment explaining each invariant.
+- Write docs and doc comments in plain language. Explain behavior, units and
+  failure cases; check claims against the code. Preserve attributed standards
+  and historical release notes when updating current documentation.
 - Start with default Clippy lints. Keep any extra lints deliberate and any
   suppressions narrow, reasoned and preferably expressed with `#[expect]`.
-- Keep all window calls and application state on the UI thread. Workers publish
-  results through snapshots or posted messages, never by calling UI functions.
+- Keep application state and widget window calls on the UI thread. Measurement
+  workers publish snapshots or post completion messages. The occupancy worker
+  queries taskbar windows and accessibility providers off-thread so an
+  unresponsive provider cannot block the UI.
 - Only embed the widget as a child of a taskbar window. Never attach its input
   queue to Explorer's input queue.
 - Win32 calls can synchronously re-enter window procedures. Do not hold state

@@ -2,8 +2,7 @@
 //!
 //! The dialog listens for the next key combination, so the user does not have
 //! to know the names of the virtual keys. A combo without Ctrl or Alt is
-//! refused, because such a shortcut would be taken by whatever window the
-//! user happens to be typing in.
+//! refused to avoid intercepting normal typing in other applications.
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
