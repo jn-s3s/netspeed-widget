@@ -17,6 +17,7 @@ pub struct Fonts {
     value_right: f32,
     rate_width: f32,
     status_width: f32,
+    resource_text_width: f32,
     down_arrow: CoverageMask,
     up_arrow: CoverageMask,
 }
@@ -66,6 +67,12 @@ impl Fonts {
         for ms in 0..=999 {
             status_width = status_width.max(value.measure(&format!("{ms} ms")));
         }
+        let pct_width = digit_cell * 3.0 + scale + unit.measure("%");
+        let label_width = ["CPU", "RAM", "DSK", "SSD"]
+            .into_iter()
+            .map(|text| unit.measure(text))
+            .fold(0.0_f32, f32::max);
+        let resource_text_width = pct_width.max(label_width);
         Some(Self {
             down_arrow: arrow_mask(scale, value.line_height(), false),
             up_arrow: arrow_mask(scale, value.line_height(), true),
@@ -76,6 +83,7 @@ impl Fonts {
             value_right,
             rate_width: value_right + 5.0 * scale + unit_width,
             status_width,
+            resource_text_width,
         })
     }
 }
@@ -124,8 +132,39 @@ fn arrow_mask(scale: f32, line_height: i32, up: bool) -> CoverageMask {
     }
 }
 
+/// One resource usage bar to render on the taskbar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResourceMeter {
+    /// Identifier character ('C' for CPU, 'M' for Memory, 'D' for Disk I/O, 'S' for Disk Space).
+    pub label: char,
+    /// Utilization ratio between 0.0 and 1.0.
+    pub ratio: f32,
+}
+
+fn resource_item_width(fonts: &Fonts) -> f32 {
+    let s = fonts.scale;
+    let bar_w = (5.0 * s).round().max(4.0);
+    bar_w + 4.0 * s + fonts.resource_text_width
+}
+
+fn resource_section_width(resource_count: usize, fonts: &Fonts) -> f32 {
+    if resource_count == 0 {
+        return 0.0;
+    }
+    let s = fonts.scale;
+    let item_w = resource_item_width(fonts);
+    let item_gap = 8.0 * s;
+    // Includes 14*s separator gap after the latency readout.
+    14.0 * s + resource_count as f32 * item_w + (resource_count - 1) as f32 * item_gap
+}
+
 /// Every region has fixed geometry regardless of displayed number or unit.
-pub fn widget_width(layout: DisplayLayout, show_graph: bool, fonts: &Fonts) -> i32 {
+pub fn widget_width(
+    layout: DisplayLayout,
+    show_graph: bool,
+    resource_count: usize,
+    fonts: &Fonts,
+) -> i32 {
     let rates = if layout == DisplayLayout::SingleLine {
         2.0
     } else {
@@ -136,10 +175,16 @@ pub fn widget_width(layout: DisplayLayout, show_graph: bool, fonts: &Fonts) -> i
     } else {
         0.0
     };
+    let resources = if layout != DisplayLayout::SingleLine && resource_count > 0 {
+        resource_section_width(resource_count, fonts)
+    } else {
+        0.0
+    };
     (16.0 * fonts.scale
         + rates * (fonts.rate_width + 12.0 * fonts.scale)
         + graph * fonts.scale
-        + fonts.status_width)
+        + fonts.status_width
+        + resources)
         .ceil() as i32
 }
 
@@ -160,6 +205,7 @@ pub struct WidgetView<'a> {
     pub layout: DisplayLayout,
     pub show_graph: bool,
     pub graph_fill: bool,
+    pub resources: &'a [ResourceMeter],
 }
 
 pub fn paint(
@@ -189,6 +235,9 @@ pub fn paint(
         text_palette.fg_dim = color;
         text_palette.down = color;
         text_palette.up = color;
+        text_palette.good = color;
+        text_palette.warn = color;
+        text_palette.bad = color;
     }
     let top = (height - if single { line } else { line * 2.0 + 2.0 * s }) * 0.5;
     draw_rate(
@@ -217,22 +266,22 @@ pub fn paint(
         &text_palette,
     );
 
-    if view.layout == DisplayLayout::Balanced && view.show_graph {
+    let mut cursor_x = 8.0 * s + fonts.rate_width + 12.0 * s;
+    if single {
+        cursor_x += fonts.rate_width + 12.0 * s;
+    } else if view.layout == DisplayLayout::Balanced && view.show_graph {
         graph.draw(
             canvas,
-            Rect::new(
-                8.0 * s + fonts.rate_width + 12.0 * s,
-                (height - 26.0 * s) * 0.5,
-                44.0 * s,
-                26.0 * s,
-            ),
+            Rect::new(cursor_x, (height - 26.0 * s) * 0.5, 44.0 * s, 26.0 * s),
             view.samples,
             palette,
             view.graph_fill,
             s,
         );
+        cursor_x += 56.0 * s;
     }
-    let center = width - 8.0 * s - fonts.status_width * 0.5;
+
+    let center = cursor_x + fonts.status_width * 0.5;
     let secondary = match (view.layout, view.status) {
         (DisplayLayout::Balanced, DisplayState::Slow(ms)) => Some(latency_label(ms)),
         _ => None,
@@ -258,6 +307,128 @@ pub fn paint(
             &fonts.value,
             text_palette.fg,
         );
+    }
+
+    if !single && !view.resources.is_empty() {
+        let res_x = cursor_x + fonts.status_width + 14.0 * s;
+        draw_resource_meters(
+            canvas,
+            fonts,
+            (res_x, top),
+            line,
+            view.resources,
+            &text_palette,
+        );
+    }
+}
+
+fn draw_resource_meters(
+    canvas: &mut Canvas,
+    fonts: &Fonts,
+    (start_x, top): (f32, f32),
+    line: f32,
+    meters: &[ResourceMeter],
+    palette: &Palette,
+) {
+    let s = fonts.scale;
+    let total_height = canvas.height() as f32;
+    let bar_w = (5.0 * s).round().max(4.0);
+    let bar_margin = (5.0 * s).round();
+    let bar_h = (total_height - bar_margin * 2.0).max(16.0 * s);
+    let bar_top = (total_height - bar_h) * 0.5;
+    let item_w = resource_item_width(fonts);
+    let item_gap = 8.0 * s;
+    let radius = (2.0 * s).min(bar_w * 0.5);
+
+    // Subtle vertical separator between the network group and resource meters
+    let sep_x = (start_x - 7.5 * s).round();
+    let sep_h = (bar_h - 4.0 * s).max(12.0 * s);
+    let sep_top = (total_height - sep_h) * 0.5;
+    canvas.fill_rounded_rect(
+        Rect::new(sep_x, sep_top, (1.0 * s).round().max(1.0), sep_h),
+        0.0,
+        palette.fg_dim.with_alpha(0.22),
+    );
+
+    let baseline_offset = (fonts.value.line_height() - fonts.unit.line_height()) as f32;
+
+    for (i, meter) in meters.iter().enumerate() {
+        let col_x = start_x + (i as f32) * (item_w + item_gap);
+        let bar_x = col_x.round();
+        let track_rect = Rect::new(bar_x, bar_top, bar_w, bar_h);
+
+        // Track background
+        canvas.fill_rounded_rect(track_rect, radius, palette.fg_dim.with_alpha(0.22));
+
+        let ratio = if meter.ratio.is_finite() {
+            meter.ratio.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let fill_h = (bar_h * ratio).round().max(if ratio > 0.01 {
+            (2.0 * s).round().max(2.0)
+        } else {
+            0.0
+        });
+        let fill_top = bar_top + bar_h - fill_h;
+        let fill_rect = Rect::new(bar_x, fill_top, bar_w, fill_h);
+
+        let fill_color = if ratio >= 0.90 {
+            palette.bad
+        } else if ratio >= 0.75 {
+            palette.warn
+        } else {
+            match meter.label {
+                'C' => palette.down,
+                'M' => palette.up,
+                'D' => palette.good,
+                _ => palette.fg_dim,
+            }
+        };
+
+        if fill_h > 0.0 {
+            canvas.fill_rounded_rect(fill_rect, radius, fill_color);
+        }
+
+        let text_left = bar_x + bar_w + 4.0 * s;
+
+        // Top line: percentage right-aligned against a fixed anchor (e.g. " 24%") to prevent jitter
+        let pct = (ratio * 100.0).round() as u32;
+        let pct_digits = pct.to_string();
+        let number_right = text_left + fonts.digit_cell * 3.0;
+        let mut cursor = number_right;
+        for ch in pct_digits.chars().rev() {
+            let mut buf = [0u8; 4];
+            let digit_str = ch.encode_utf8(&mut buf);
+            let measured = fonts.value.measure(digit_str);
+            let advance = fonts.digit_cell;
+            canvas.draw_text(
+                cursor - advance + (advance - measured) * 0.5,
+                top,
+                digit_str,
+                &fonts.value,
+                palette.fg,
+            );
+            cursor -= advance;
+        }
+        canvas.draw_text(
+            number_right + 1.0 * s,
+            top + baseline_offset,
+            "%",
+            &fonts.unit,
+            palette.fg_dim,
+        );
+
+        // Bottom line: crisp resource label ("CPU", "RAM", "DSK", "SSD")
+        let label_text = match meter.label {
+            'C' => "CPU",
+            'M' => "RAM",
+            'D' => "DSK",
+            'S' => "SSD",
+            _ => "SYS",
+        };
+        let bottom_y = top + line + 2.0 * s + baseline_offset * 0.5;
+        canvas.draw_text(text_left, bottom_y, label_text, &fonts.unit, palette.fg_dim);
     }
 }
 
@@ -356,9 +527,10 @@ mod tests {
                     layout: DisplayLayout::Balanced,
                     show_graph: true,
                     graph_fill: true,
+                    resources: &[],
                 };
                 let palette = crate::theme::palette_for("Default");
-                let width = widget_width(view.layout, true, &fonts);
+                let width = widget_width(view.layout, true, 0, &fonts);
                 let mut graph = TrafficGraph::new();
                 let mut render = || {
                     let mut canvas = Canvas::new(width, height);
@@ -395,7 +567,7 @@ mod tests {
                 for height in [dpi as i32 / 2, dpi as i32 / 3] {
                     let fonts =
                         Fonts::for_dpi(dpi, layout == DisplayLayout::SingleLine, height).unwrap();
-                    let width = widget_width(layout, false, &fonts);
+                    let width = widget_width(layout, false, 0, &fonts);
                     let rate = RateText {
                         value: "<0.01".to_string(),
                         unit: "MB/s",
@@ -418,6 +590,7 @@ mod tests {
                                 layout,
                                 show_graph: false,
                                 graph_fill: false,
+                                resources: &[],
                             };
                             paint(
                                 &mut canvas,
@@ -448,7 +621,7 @@ mod tests {
                                 visible_status,
                                 "status must be visible in {layout:?} at {dpi} DPI"
                             );
-                            assert_eq!(widget_width(layout, false, &fonts), width);
+                            assert_eq!(widget_width(layout, false, 0, &fonts), width);
                         }
                     }
                 }
@@ -470,7 +643,7 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             let height = dpi as i32 / 2 - 1;
             let fonts = Fonts::for_dpi(dpi, false, height).unwrap();
-            let width = widget_width(DisplayLayout::Balanced, false, &fonts);
+            let width = widget_width(DisplayLayout::Balanced, false, 0, &fonts);
             let mut canvas = Canvas::new(width, height);
             let palette = crate::theme::palette_for("Dark");
             let rate = RateText {
@@ -489,6 +662,7 @@ mod tests {
                     layout: DisplayLayout::Balanced,
                     show_graph: false,
                     graph_fill: false,
+                    resources: &[],
                 },
                 &palette,
                 &mut TrafficGraph::new(),
@@ -528,7 +702,7 @@ mod tests {
         for dpi in [96, 120, 144, 192] {
             let height = dpi as i32 / 2;
             let fonts = Fonts::for_dpi(dpi, false, height).unwrap();
-            let width = widget_width(DisplayLayout::Balanced, true, &fonts);
+            let width = widget_width(DisplayLayout::Balanced, true, 0, &fonts);
             let palette = crate::theme::palette_for("Default");
             let rate = RateText {
                 value: "999+".to_string(),
@@ -562,6 +736,7 @@ mod tests {
                     layout: DisplayLayout::Balanced,
                     show_graph: true,
                     graph_fill: true,
+                    resources: &[],
                 };
                 paint(
                     &mut canvas,
@@ -611,7 +786,7 @@ mod tests {
                 let height = dpi as i32 / 2;
                 let fonts =
                     Fonts::for_dpi(dpi, layout == DisplayLayout::SingleLine, height).unwrap();
-                let mut canvas = Canvas::new(widget_width(layout, true, &fonts), height);
+                let mut canvas = Canvas::new(widget_width(layout, true, 0, &fonts), height);
                 let rate = RateText {
                     value: "999".to_string(),
                     unit: "Mbps",
@@ -625,6 +800,7 @@ mod tests {
                     layout,
                     show_graph: true,
                     graph_fill: false,
+                    resources: &[],
                 };
                 paint(
                     &mut canvas,
@@ -642,5 +818,116 @@ mod tests {
                     .any(|pixel| pixel[3] > 0));
             }
         }
+    }
+
+    #[test]
+    fn resource_meters_expand_widget_and_render_all_meters() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        let fonts = Fonts::for_dpi(96, false, 48).unwrap();
+        let w_no_res = widget_width(DisplayLayout::Balanced, true, 0, &fonts);
+        let w_3_res = widget_width(DisplayLayout::Balanced, true, 3, &fonts);
+        let w_4_res = widget_width(DisplayLayout::Balanced, true, 4, &fonts);
+        assert!(w_3_res > w_no_res);
+        assert!(w_4_res > w_3_res);
+
+        let rate = RateText {
+            value: "100".to_string(),
+            unit: "Mbps",
+        };
+        let meters = [
+            ResourceMeter {
+                label: 'C',
+                ratio: 0.25,
+            },
+            ResourceMeter {
+                label: 'M',
+                ratio: 0.65,
+            },
+            ResourceMeter {
+                label: 'D',
+                ratio: 0.10,
+            },
+            ResourceMeter {
+                label: 'S',
+                ratio: 0.85,
+            },
+        ];
+        let mut canvas = Canvas::new(w_4_res, 48);
+        let view = WidgetView {
+            down: &rate,
+            up: &rate,
+            status: DisplayState::Healthy(10.0),
+            failure_intensity: 0.0,
+            samples: &[],
+            layout: DisplayLayout::Balanced,
+            show_graph: true,
+            graph_fill: false,
+            resources: &meters,
+        };
+        paint(
+            &mut canvas,
+            &fonts,
+            &view,
+            &crate::theme::palette_for("Default"),
+            &mut TrafficGraph::new(),
+        );
+        // Ensure pixels are drawn in the canvas
+        assert!(canvas
+            .pixels()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0));
+
+        // In alert states without a graph, resource meters must also use the uniform alert hue.
+        let palette = crate::theme::palette_for("Default");
+        let expected = alert_color(DisplayState::Failed, &palette, 0.5).unwrap();
+        let w_alert = widget_width(DisplayLayout::Balanced, false, 4, &fonts);
+        let mut alert_canvas = Canvas::new(w_alert, 48);
+        let alert_view = WidgetView {
+            status: DisplayState::Failed,
+            failure_intensity: 0.5,
+            show_graph: false,
+            ..view
+        };
+        paint(
+            &mut alert_canvas,
+            &fonts,
+            &alert_view,
+            &palette,
+            &mut TrafficGraph::new(),
+        );
+        for pixel in alert_canvas.pixels().as_chunks::<4>().0 {
+            let alpha = pixel[3] as f32;
+            for (channel, color) in pixel[..3].iter().zip([expected.r, expected.g, expected.b]) {
+                assert!((*channel as f32 - color * alpha).abs() <= 2.0);
+            }
+        }
+
+        // Verify healthy storage (< 0.75) does not use warning amber, and NaN ratios are sanitized
+        let healthy_storage_and_nan = [
+            ResourceMeter {
+                label: 'S',
+                ratio: 0.20,
+            },
+            ResourceMeter {
+                label: 'C',
+                ratio: f32::NAN,
+            },
+        ];
+        let w_2_res = widget_width(DisplayLayout::Balanced, false, 2, &fonts);
+        let mut healthy_canvas = Canvas::new(w_2_res, 48);
+        let healthy_view = WidgetView {
+            resources: &healthy_storage_and_nan,
+            ..view
+        };
+        paint(
+            &mut healthy_canvas,
+            &fonts,
+            &healthy_view,
+            &palette,
+            &mut TrafficGraph::new(),
+        );
+        assert!(healthy_canvas.pixels().iter().any(|&b| b > 0));
     }
 }

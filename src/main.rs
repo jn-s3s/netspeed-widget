@@ -21,6 +21,7 @@ mod paths;
 mod sampler;
 mod schedule;
 mod speedtest;
+mod system;
 mod theme;
 mod win;
 

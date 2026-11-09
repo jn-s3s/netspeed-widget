@@ -170,7 +170,12 @@ fn assert_menu_organization(popup: HWND) {
     assert!(appearance_labels[5].starts_with("Show traffic graph"));
     assert_eq!(
         &appearance_labels[6..],
-        &["Shade download area", "Animate error indicator"]
+        &[
+            "Shade download area",
+            "Animate error indicator",
+            "",
+            "Resource meters"
+        ]
     );
     for index in 0..3 {
         let submenu = unsafe { GetSubMenu(appearance, index) };
@@ -612,6 +617,11 @@ fn widget_embeds_in_taskbar_with_automatic_placement() {
         (CMD_GRAPH_FILL, "graph_fill", true),
         (CMD_TOGGLE_GRAPH, "show_graph", false),
         (CMD_TOGGLE_GRAPH, "show_graph", true),
+        (CMD_TOGGLE_RESOURCES, "show_resources", true),
+        (CMD_TOGGLE_RESOURCE_CPU, "show_cpu", false),
+        (CMD_TOGGLE_RESOURCE_MEM, "show_memory", false),
+        (CMD_TOGGLE_RESOURCE_DISK_IO, "show_disk_activity", false),
+        (CMD_TOGGLE_RESOURCE_DISK_SPACE, "show_disk_storage", false),
     ] {
         command(controller, id);
         let saved: serde_json::Value =
