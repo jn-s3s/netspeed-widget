@@ -125,6 +125,36 @@ pub struct Config {
         skip_serializing_if = "Option::is_none"
     )]
     pub taskbar_monitor: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_resources: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_cpu: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_memory: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_disk_activity: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_disk_storage: Option<bool>,
 }
 
 fn tolerant<'de, D: Deserializer<'de>, T: DeserializeOwned + Default>(
@@ -173,6 +203,11 @@ impl Default for Config {
             show_graph: None,
             widget_visible: None,
             taskbar_monitor: None,
+            show_resources: None,
+            show_cpu: None,
+            show_memory: None,
+            show_disk_activity: None,
+            show_disk_storage: None,
         }
     }
 }
@@ -443,6 +478,61 @@ pub fn set_taskbar_monitor(device: Option<String>) {
     mutate(|config| config.taskbar_monitor = device);
 }
 
+/// Returns whether taskbar resource meters are enabled.
+pub fn show_resources() -> bool {
+    let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
+    guard.show_resources.unwrap_or(false)
+}
+
+/// Persists whether taskbar resource meters are enabled.
+pub fn set_show_resources(value: bool) {
+    mutate(|config| config.show_resources = Some(value));
+}
+
+/// Returns whether the CPU meter is displayed when resource meters are active.
+pub fn show_cpu() -> bool {
+    let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
+    guard.show_cpu.unwrap_or(true)
+}
+
+/// Persists whether the CPU meter is displayed.
+pub fn set_show_cpu(value: bool) {
+    mutate(|config| config.show_cpu = Some(value));
+}
+
+/// Returns whether the memory meter is displayed when resource meters are active.
+pub fn show_memory() -> bool {
+    let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
+    guard.show_memory.unwrap_or(true)
+}
+
+/// Persists whether the memory meter is displayed.
+pub fn set_show_memory(value: bool) {
+    mutate(|config| config.show_memory = Some(value));
+}
+
+/// Returns whether the disk activity meter is displayed when resource meters are active.
+pub fn show_disk_activity() -> bool {
+    let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
+    guard.show_disk_activity.unwrap_or(true)
+}
+
+/// Persists whether the disk activity meter is displayed.
+pub fn set_show_disk_activity(value: bool) {
+    mutate(|config| config.show_disk_activity = Some(value));
+}
+
+/// Returns whether the disk storage meter is displayed when resource meters are active.
+pub fn show_disk_storage() -> bool {
+    let guard = cache().lock().unwrap_or_else(|err| err.into_inner());
+    guard.show_disk_storage.unwrap_or(true)
+}
+
+/// Persists whether the disk storage meter is displayed.
+pub fn set_show_disk_storage(value: bool) {
+    mutate(|config| config.show_disk_storage = Some(value));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -541,6 +631,22 @@ mod tests {
         assert!(!restored.auto_fit);
         assert!(restored.graph_fill && restored.subtle_background);
         assert!(!restored.animate_errors);
+
+        let res_config = Config {
+            show_resources: Some(true),
+            show_cpu: Some(false),
+            show_memory: Some(true),
+            show_disk_activity: Some(false),
+            show_disk_storage: Some(true),
+            ..Config::default()
+        };
+        let restored_res: Config =
+            serde_json::from_str(&serde_json::to_string(&res_config).unwrap()).unwrap();
+        assert_eq!(restored_res.show_resources, Some(true));
+        assert_eq!(restored_res.show_cpu, Some(false));
+        assert_eq!(restored_res.show_memory, Some(true));
+        assert_eq!(restored_res.show_disk_activity, Some(false));
+        assert_eq!(restored_res.show_disk_storage, Some(true));
     }
 
     #[test]

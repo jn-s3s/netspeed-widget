@@ -20,6 +20,10 @@ pub const CMD_DETAILS: u32 = 1012;
 pub const CMD_SETTINGS: u32 = 1013;
 /// Toggles per-user Windows sign-in startup for the current executable.
 pub const CMD_TOGGLE_AUTOSTART: u32 = 1014;
+/// Checks GitHub for a newer release or opens the available release page.
+pub const CMD_CHECK_UPDATES: u32 = 1015;
+/// Opens the latest available GitHub release in the user's browser.
+pub const CMD_OPEN_UPDATE_URL: u32 = 1016;
 /// Selects the compact taskbar layout.
 pub const CMD_LAYOUT_COMPACT: u32 = 1100;
 /// Selects the balanced taskbar layout.
@@ -38,6 +42,16 @@ pub const CMD_SUBTLE_BACKGROUND: u32 = 1113;
 pub const CMD_GRAPH_FILL: u32 = 1114;
 /// Toggles the failed-probe text pulse.
 pub const CMD_ANIMATE_ERRORS: u32 = 1115;
+/// Toggles the taskbar system resource meters group.
+pub const CMD_TOGGLE_RESOURCES: u32 = 1116;
+/// Toggles the CPU usage meter.
+pub const CMD_TOGGLE_RESOURCE_CPU: u32 = 1117;
+/// Toggles the Memory usage meter.
+pub const CMD_TOGGLE_RESOURCE_MEM: u32 = 1118;
+/// Toggles the Disk activity (I/O) meter.
+pub const CMD_TOGGLE_RESOURCE_DISK_IO: u32 = 1119;
+/// Toggles the Disk storage space meter.
+pub const CMD_TOGGLE_RESOURCE_DISK_SPACE: u32 = 1120;
 /// First command ID reserved for theme presets, indexed by preset order.
 pub const CMD_THEME_BASE: u32 = 2000;
 /// First command ID reserved for taskbar monitors, indexed by menu order.

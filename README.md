@@ -32,9 +32,9 @@ cargo run --locked
   and Escape dismisses it. Clicking elsewhere dismisses the panel too.
 - Start a manual speedtest with Run speedtest in the Network details panel.
 - Right-click the widget or tray icon to open **Network details**, **Show widget** or **Quit**.
-  **Appearance** contains layout, units, theme, background, graph and visual effects.
+  **Appearance** contains layout, units, theme, background, graph, visual effects and resource meters.
   **Taskbar** contains placement and, when multiple taskbars are available, **Display**.
-  **Preferences** contains startup and the visibility shortcut. The Network details panel's
+  **Preferences** contains startup, the visibility shortcut and **Check for updates…**. When a newer GitHub release is available, a release link also appears in the root menu and Network details. The Network details panel's
   **Settings** button opens this menu even when the widget has no room to appear.
 - Ctrl+Shift+Alt+N toggles visibility. Change it under **Preferences → Change visibility shortcut…**.
 - Click the tray icon to show or hide the widget.
@@ -111,6 +111,13 @@ the Network details graph remains available in every layout.
 opaque red shades. Turn it off for steady red text. The pulse also stops while
 the widget is hidden, when Windows animations are disabled, or in high contrast.
 High contrast uses the system text color for all readouts.
+
+**Appearance → Resource meters** adds full-height vertical gauges with live percentage
+readouts for CPU (`CPU`), memory (`RAM`), disk activity (`DSK`) and disk storage (`SSD`)
+to the right of the network readout in Balanced and Compact layouts. Each meter can be
+toggled individually; the control is disabled with an explanation when Single line is
+active. When resource meters are enabled, Network details and the hover tooltip also
+include a system and fixed-drive storage summary.
 
 Under **Appearance → Units**, choose decimal bits (Kbps/Mbps/Gbps) or bytes (kB/s/MB/s/GB/s).
 Prefixes adapt with hysteresis to avoid boundary flicker. Zero traffic is shown
@@ -200,6 +207,10 @@ Active tests request 25 MB down and upload a 256 KiB calibration payload, then
 up to 8 MiB more. Automatic tests consume data. Results estimate throughput to
 that service, not guaranteed line capacity.
 
+Release checks query `api.github.com` 30 seconds after launch and every 12 hours
+after a completed check (retrying after 60 minutes on failure), or manually via
+**Preferences → Check for updates…**. Draft and pre-release entries are ignored.
+
 ## Build and verify
 
 ```powershell
@@ -234,7 +245,7 @@ the current Windows session has no Explorer taskbar.
 - `src/win/details.rs`, `src/win/tooltip.rs`, `src/win/appearance.rs`: native
   details panel, hover information and Windows appearance detection.
 - `src/canvas.rs`, `src/paint.rs`, `src/graph.rs`, `src/theme.rs`: rendering.
-- `src/sampler.rs`, `src/latency.rs`, `src/speedtest.rs`: background measurements.
+- `src/sampler.rs`, `src/latency.rs`, `src/speedtest.rs`, `src/system.rs`, `src/update.rs`: background measurements and GitHub release checks.
 - `src/config.rs`, `src/paths.rs`, `src/logger.rs`: persistent state and logging.
 - `src/format.rs`, `src/hotkey.rs`, `src/schedule.rs`, `src/clock.rs`: formatting,
   shortcut parsing, scheduling and shared time helpers.

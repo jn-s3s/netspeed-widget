@@ -170,7 +170,12 @@ fn assert_menu_organization(popup: HWND) {
     assert!(appearance_labels[5].starts_with("Show traffic graph"));
     assert_eq!(
         &appearance_labels[6..],
-        &["Shade download area", "Animate error indicator"]
+        &[
+            "Shade download area",
+            "Animate error indicator",
+            "",
+            "Resource meters"
+        ]
     );
     for index in 0..3 {
         let submenu = unsafe { GetSubMenu(appearance, index) };
@@ -201,9 +206,19 @@ fn assert_menu_organization(popup: HWND) {
     );
     assert!(taskbar_labels.len() == 2 || taskbar_labels[2..] == ["", "Display"]);
     let preferences = unsafe { GetSubMenu(menu, appearance_index as i32 + 2) };
-    assert!(labels(preferences)[0].starts_with("Start with Windows"));
-    assert!(labels(preferences)[1].starts_with("Change visibility shortcut…"));
+    let pref_labels = labels(preferences);
+    assert!(pref_labels[0].starts_with("Start with Windows"));
+    assert!(pref_labels[1].starts_with("Change visibility shortcut…"));
     assert_eq!(unsafe { GetMenuItemID(preferences, 1) }, CMD_CHANGE_HOTKEY);
+    assert_eq!(pref_labels[2], "");
+    assert!(
+        pref_labels[3].starts_with("Check for updates…")
+            || pref_labels[3].starts_with("Checking for updates…")
+    );
+    assert!(matches!(
+        unsafe { GetMenuItemID(preferences, 3) },
+        CMD_CHECK_UPDATES | 0
+    ));
     fn assert_max_depth(menu: HMENU, depth: usize) {
         assert!(depth <= 2, "more than two submenu levels");
         for index in 0..unsafe { GetMenuItemCount(menu) } {
@@ -612,6 +627,11 @@ fn widget_embeds_in_taskbar_with_automatic_placement() {
         (CMD_GRAPH_FILL, "graph_fill", true),
         (CMD_TOGGLE_GRAPH, "show_graph", false),
         (CMD_TOGGLE_GRAPH, "show_graph", true),
+        (CMD_TOGGLE_RESOURCES, "show_resources", true),
+        (CMD_TOGGLE_RESOURCE_CPU, "show_cpu", false),
+        (CMD_TOGGLE_RESOURCE_MEM, "show_memory", false),
+        (CMD_TOGGLE_RESOURCE_DISK_IO, "show_disk_activity", false),
+        (CMD_TOGGLE_RESOURCE_DISK_SPACE, "show_disk_storage", false),
     ] {
         command(controller, id);
         let saved: serde_json::Value =
