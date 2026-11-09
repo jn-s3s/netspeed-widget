@@ -34,7 +34,7 @@ cargo run --locked
 - Right-click the widget or tray icon to open **Network details**, **Show widget** or **Quit**.
   **Appearance** contains layout, units, theme, background, graph, visual effects and resource meters.
   **Taskbar** contains placement and, when multiple taskbars are available, **Display**.
-  **Preferences** contains startup and the visibility shortcut. The Network details panel's
+  **Preferences** contains startup, the visibility shortcut and **Check for updates…**. When a newer GitHub release is available, a release link also appears in the root menu and Network details. The Network details panel's
   **Settings** button opens this menu even when the widget has no room to appear.
 - Ctrl+Shift+Alt+N toggles visibility. Change it under **Preferences → Change visibility shortcut…**.
 - Click the tray icon to show or hide the widget.
@@ -241,7 +241,7 @@ the current Windows session has no Explorer taskbar.
 - `src/win/details.rs`, `src/win/tooltip.rs`, `src/win/appearance.rs`: native
   details panel, hover information and Windows appearance detection.
 - `src/canvas.rs`, `src/paint.rs`, `src/graph.rs`, `src/theme.rs`: rendering.
-- `src/sampler.rs`, `src/latency.rs`, `src/speedtest.rs`, `src/system.rs`: background measurements.
+- `src/sampler.rs`, `src/latency.rs`, `src/speedtest.rs`, `src/system.rs`, `src/update.rs`: background measurements and GitHub release checks.
 - `src/config.rs`, `src/paths.rs`, `src/logger.rs`: persistent state and logging.
 - `src/format.rs`, `src/hotkey.rs`, `src/schedule.rs`, `src/clock.rs`: formatting,
   shortcut parsing, scheduling and shared time helpers.

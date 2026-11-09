@@ -47,6 +47,7 @@ use crate::schedule::next_speedtest_due;
 use crate::speedtest::{self, SpeedtestResult};
 use crate::system::{SystemSampler, SystemSnapshot};
 use crate::theme::{self, Health, Palette};
+use crate::update::{self, UpdateCheck, UpdateInfo};
 use crate::win::dialog;
 use crate::win::gdi::{blit_layered, to_wide};
 use crate::win::menu::{self, MenuEntry};
@@ -61,6 +62,8 @@ use crate::win::{appearance::Appearance, details, tooltip::Tooltip};
 
 /// Notifies the UI thread that the speedtest result slot is ready to read.
 const WM_APP_SPEEDTEST: u32 = WM_APP + 1;
+/// Notifies the UI thread that the version check result slot is ready to read.
+const WM_APP_UPDATE_CHECK: u32 = WM_APP + 4;
 
 /// Timer that refreshes the widget.
 const TIMER_TICK: usize = 1;
@@ -83,6 +86,12 @@ const SPEEDTEST_INTERVAL_SEC: f64 = 4.0 * 60.0 * 60.0;
 const SPEEDTEST_STARTUP_GRACE_SEC: f64 = 20.0;
 /// Delay before retrying a failed speedtest or a passive estimate.
 const SPEEDTEST_RETRY_SEC: f64 = 15.0 * 60.0;
+/// Seconds between automatic GitHub release checks.
+const UPDATE_CHECK_INTERVAL_SEC: f64 = 12.0 * 60.0 * 60.0;
+/// Delay before the first automatic GitHub release check after startup.
+const UPDATE_CHECK_STARTUP_GRACE_SEC: f64 = 30.0;
+/// Delay before retrying a failed automatic GitHub release check.
+const UPDATE_CHECK_RETRY_SEC: f64 = 60.0 * 60.0;
 /// Identifier of the global hotkey registration.
 const HOTKEY_ID: i32 = 1;
 
@@ -125,6 +134,9 @@ struct AppState {
     speedtest_running: bool,
     speedtest_next_due: f64,
     speedtest_summary: String,
+    update_check_running: bool,
+    update_check_next_due: f64,
+    available_update: Option<UpdateInfo>,
     graph: TrafficGraph,
     fonts: Option<Fonts>,
     width: i32,
@@ -350,6 +362,9 @@ pub fn run() -> Result<(), String> {
                 )
             })
             .unwrap_or_default(),
+        update_check_running: false,
+        update_check_next_due: now_epoch() + UPDATE_CHECK_STARTUP_GRACE_SEC,
+        available_update: None,
         graph: TrafficGraph::new(),
         fonts: Some(fonts),
         width,
@@ -832,9 +847,17 @@ fn add_tray_icon() {
 /// Refreshes the tray tooltip with the live readout.
 fn update_tray_tooltip(state: &mut AppState) {
     let ping = ping_text(state);
+    let version_line = match &state.available_update {
+        Some(info) => format!(
+            "NetSpeed Widget v{} (v{} available)",
+            env!("CARGO_PKG_VERSION"),
+            info.version
+        ),
+        None => format!("NetSpeed Widget v{}", env!("CARGO_PKG_VERSION")),
+    };
     let tooltip = format!(
-        "NetSpeed Widget v{}\n{}\nD {} {} | U {} {} | {}",
-        env!("CARGO_PKG_VERSION"),
+        "{}\n{}\nD {} {} | U {} {} | {}",
+        version_line,
         speedtest_label(&state.speedtest_summary),
         state.down_text.value,
         state.down_text.unit,
@@ -1014,6 +1037,175 @@ fn finish_speedtest(result: Option<SpeedtestResult>) {
     render(state);
 }
 
+/// Completed update-check payload waiting to be consumed by the UI thread.
+struct PendingUpdateCheck {
+    manual: bool,
+    outcome: Result<UpdateCheck, String>,
+}
+
+/// Shared slot for a worker's update-check result, read on completion notification.
+fn pending_update_check() -> &'static Mutex<Option<PendingUpdateCheck>> {
+    static RESULT: OnceLock<Mutex<Option<PendingUpdateCheck>>> = OnceLock::new();
+    RESULT.get_or_init(|| Mutex::new(None))
+}
+
+/// Starts a GitHub release version check on a worker thread.
+fn start_update_check(manual: bool) {
+    let controller = {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        if state.update_check_running {
+            return;
+        };
+        state.update_check_running = true;
+        state.controller
+    };
+    let handle = controller.0 as isize;
+    let spawned = std::thread::Builder::new()
+        .name("update-check-worker".to_string())
+        .spawn(move || {
+            let outcome = update::check_for_update();
+            *pending_update_check()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) =
+                Some(PendingUpdateCheck { manual, outcome });
+            unsafe {
+                let _ = PostMessageW(
+                    HWND(handle as *mut c_void),
+                    WM_APP_UPDATE_CHECK,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        });
+    if let Err(err) = spawned {
+        logger::error("update", &format!("could not start worker: {err}"));
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(state) = guard.as_mut() {
+            state.update_check_running = false;
+            state.update_check_next_due = now_epoch() + UPDATE_CHECK_RETRY_SEC;
+        }
+    }
+}
+
+/// Applies the result of a finished GitHub release version check.
+fn finish_update_check(manual: bool, outcome: Result<UpdateCheck, String>) {
+    let dialog_action = {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        state.update_check_running = false;
+        let action = match outcome {
+            Ok(UpdateCheck::Available(info)) => {
+                logger::info(
+                    "update",
+                    &format!("new version available: v{} ({})", info.version, info.url),
+                );
+                state.available_update = Some(info.clone());
+                state.update_check_next_due = now_epoch() + UPDATE_CHECK_INTERVAL_SEC;
+                manual.then_some(Ok(Some(info)))
+            }
+            Ok(UpdateCheck::UpToDate) => {
+                logger::info("update", "application is up to date");
+                state.available_update = None;
+                state.update_check_next_due = now_epoch() + UPDATE_CHECK_INTERVAL_SEC;
+                manual.then_some(Ok(None))
+            }
+            Err(err) => {
+                logger::warning("update", &err);
+                state.update_check_next_due = now_epoch() + UPDATE_CHECK_RETRY_SEC;
+                manual.then_some(Err(err))
+            }
+        };
+        update_tray_tooltip(state);
+        action
+    };
+
+    if let Some(result) = dialog_action {
+        show_update_dialog(result);
+    }
+}
+
+/// Shows the result of a manual update check without holding `STATE`.
+fn show_update_dialog(result: Result<Option<UpdateInfo>, String>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_YESNO,
+    };
+    let owner = state_controller();
+    let title = to_wide("NetSpeed Widget");
+    match result {
+        Ok(Some(info)) => {
+            let text = to_wide(&format!(
+                "NetSpeed Widget v{} is available (you have v{}).\n\nOpen the release page in your browser?\n{}",
+                info.version,
+                env!("CARGO_PKG_VERSION"),
+                info.url
+            ));
+            // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+            let choice = unsafe {
+                MessageBoxW(
+                    owner,
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_YESNO | MB_ICONINFORMATION,
+                )
+            };
+            if choice == IDYES {
+                open_release_page(&info.url);
+            }
+        }
+        Ok(None) => {
+            let text = to_wide(&format!(
+                "NetSpeed Widget v{} is up to date.",
+                env!("CARGO_PKG_VERSION")
+            ));
+            // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+            unsafe {
+                MessageBoxW(
+                    owner,
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            }
+        }
+        Err(err) => {
+            let text = to_wide(&format!("Could not check for updates.\n\n{err}"));
+            // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+            unsafe {
+                MessageBoxW(
+                    owner,
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
+    }
+}
+
+/// Opens a release URL in the browser and reports any shell launch failure.
+fn open_release_page(url: &str) {
+    if let Err(err) = update::open_release_url(url) {
+        logger::error("update", &format!("could not open release page: {err}"));
+        let text = to_wide(&format!("Could not open the release page.\n\n{err}"));
+        let title = to_wide("NetSpeed Widget");
+        // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            MessageBoxW(
+                state_controller(),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+}
+
 /// The controller window procedure.
 unsafe extern "system" fn controller_proc(
     hwnd: HWND,
@@ -1081,6 +1273,16 @@ unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
                 .unwrap_or_else(|err| err.into_inner())
                 .take();
             finish_speedtest(result);
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_CHECK => {
+            let result = pending_update_check()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            if let Some(pending) = result {
+                finish_update_check(pending.manual, pending.outcome);
+            }
             LRESULT(0)
         }
         TRAY_CALLBACK => {
@@ -1312,7 +1514,8 @@ fn tick(timer: usize) {
         TIMER_TICK => {}
         TIMER_BACKGROUND => {
             let preferred = preferred_taskbar();
-            let (attached, due) = {
+            let now = now_epoch();
+            let (attached, due, update_due) = {
                 let guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
                 match guard.as_ref() {
                     Some(state) => (
@@ -1321,7 +1524,8 @@ fn tick(timer: usize) {
                                 taskbar::is_window(bar.hwnd)
                                     && preferred.is_some_and(|wanted| wanted.hwnd == bar.hwnd)
                             }),
-                        !state.speedtest_running && now_epoch() >= state.speedtest_next_due,
+                        !state.speedtest_running && now >= state.speedtest_next_due,
+                        !state.update_check_running && now >= state.update_check_next_due,
                     ),
                     None => return,
                 }
@@ -1331,6 +1535,9 @@ fn tick(timer: usize) {
             }
             if due {
                 start_speedtest(false);
+            }
+            if update_due {
+                start_update_check(false);
             }
             return;
         }
@@ -1765,6 +1972,18 @@ fn details_snapshot(state: &AppState) -> details::Snapshot {
             )
         })
         .unwrap_or_default();
+    let update_line = state
+        .available_update
+        .as_ref()
+        .map(|info| {
+            format!(
+                "\r\n\r\nUpdate available: v{} (current v{})\r\nRelease: {}",
+                info.version,
+                env!("CARGO_PKG_VERSION"),
+                info.url
+            )
+        })
+        .unwrap_or_default();
     details::Snapshot {
         rates: format!(
             "↓ {} {}    ↑ {} {}",
@@ -1774,7 +1993,7 @@ fn details_snapshot(state: &AppState) -> details::Snapshot {
             "{sampling}{probe}\r\nTarget: {target} · TCP / ICMP fallback\r\n\r\n\
              Session: ↓ {down_total}   ↑ {up_total}\r\n\r\n{testing}{speedtest}\r\n\r\n\
              60 s peaks: ↓ {peak_down:.1} / ↑ {peak_up:.1} Mbps\r\n{legend}\r\n\
-             Graph: shared automatic scale, not utilization.\r\nActive tests transfer data.{sys_summary}"
+             Graph: shared automatic scale, not utilization.\r\nActive tests transfer data.{sys_summary}{update_line}"
         ),
         samples,
         palette: state.palette,
@@ -1855,6 +2074,12 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
     if state.widget_visible && !state.placement_available {
         entries.push(MenuEntry::Disabled {
             label: "Taskbar space unavailable—tray only".to_string(),
+        });
+    }
+    if let Some(info) = &state.available_update {
+        entries.push(MenuEntry::Command {
+            id: CMD_OPEN_UPDATE_URL,
+            label: format!("Update available: v{}…", info.version),
         });
     }
     entries.push(MenuEntry::Separator);
@@ -2065,6 +2290,21 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             }
         }
     };
+    let update_entry = if state.update_check_running {
+        MenuEntry::Disabled {
+            label: "Checking for updates…".to_string(),
+        }
+    } else if let Some(info) = &state.available_update {
+        MenuEntry::Command {
+            id: CMD_OPEN_UPDATE_URL,
+            label: format!("Open release page (v{} available)…", info.version),
+        }
+    } else {
+        MenuEntry::Command {
+            id: CMD_CHECK_UPDATES,
+            label: format!("Check for updates… (v{})", env!("CARGO_PKG_VERSION")),
+        }
+    };
     entries.push(MenuEntry::Submenu {
         label: "Preferences".to_string(),
         items: vec![
@@ -2073,6 +2313,8 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                 id: CMD_CHANGE_HOTKEY,
                 label: hotkey_label(state.hotkey_ok, &state.hotkey_combo),
             },
+            MenuEntry::Separator,
+            update_entry,
         ],
     });
     entries.push(MenuEntry::Separator);
@@ -2359,6 +2601,17 @@ fn handle_command(id: u32) {
         CMD_CHANGE_HOTKEY => change_hotkey(),
         CMD_TOGGLE_VISIBILITY => toggle_visibility(),
         CMD_TOGGLE_AUTOSTART => toggle_autostart(),
+        CMD_CHECK_UPDATES => start_update_check(true),
+        CMD_OPEN_UPDATE_URL => {
+            let url = {
+                let guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+                guard
+                    .as_ref()
+                    .and_then(|state| state.available_update.as_ref().map(|info| info.url.clone()))
+            }
+            .unwrap_or_else(|| update::RELEASES_PAGE_URL.to_string());
+            open_release_page(&url);
+        }
         CMD_QUIT => {
             shutdown();
             unsafe {
