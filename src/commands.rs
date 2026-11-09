@@ -20,6 +20,10 @@ pub const CMD_DETAILS: u32 = 1012;
 pub const CMD_SETTINGS: u32 = 1013;
 /// Toggles per-user Windows sign-in startup for the current executable.
 pub const CMD_TOGGLE_AUTOSTART: u32 = 1014;
+/// Checks GitHub for a newer release or opens the available release page.
+pub const CMD_CHECK_UPDATES: u32 = 1015;
+/// Opens the latest available GitHub release in the user's browser.
+pub const CMD_OPEN_UPDATE_URL: u32 = 1016;
 /// Selects the compact taskbar layout.
 pub const CMD_LAYOUT_COMPACT: u32 = 1100;
 /// Selects the balanced taskbar layout.

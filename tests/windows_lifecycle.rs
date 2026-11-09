@@ -206,9 +206,19 @@ fn assert_menu_organization(popup: HWND) {
     );
     assert!(taskbar_labels.len() == 2 || taskbar_labels[2..] == ["", "Display"]);
     let preferences = unsafe { GetSubMenu(menu, appearance_index as i32 + 2) };
-    assert!(labels(preferences)[0].starts_with("Start with Windows"));
-    assert!(labels(preferences)[1].starts_with("Change visibility shortcut…"));
+    let pref_labels = labels(preferences);
+    assert!(pref_labels[0].starts_with("Start with Windows"));
+    assert!(pref_labels[1].starts_with("Change visibility shortcut…"));
     assert_eq!(unsafe { GetMenuItemID(preferences, 1) }, CMD_CHANGE_HOTKEY);
+    assert_eq!(pref_labels[2], "");
+    assert!(
+        pref_labels[3].starts_with("Check for updates…")
+            || pref_labels[3].starts_with("Checking for updates…")
+    );
+    assert!(matches!(
+        unsafe { GetMenuItemID(preferences, 3) },
+        CMD_CHECK_UPDATES | 0
+    ));
     fn assert_max_depth(menu: HMENU, depth: usize) {
         assert!(depth <= 2, "more than two submenu levels");
         for index in 0..unsafe { GetMenuItemCount(menu) } {

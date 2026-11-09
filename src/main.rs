@@ -23,6 +23,7 @@ mod schedule;
 mod speedtest;
 mod system;
 mod theme;
+mod update;
 mod win;
 
 use std::os::windows::io::{FromRawHandle, OwnedHandle};

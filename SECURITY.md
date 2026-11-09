@@ -23,7 +23,7 @@ If private reporting is unavailable for any reason, open a minimal public issue 
 
 - The NetSpeed Widget version affected (check the release asset filename or executable's Details properties)
 - Steps or a proof of concept showing how the issue manifests
-- Which component is involved if you know it (HTTPS speedtest, config or log file handling, global hotkey registration, taskbar integration, tray icon)
+- Which component is involved if you know it (HTTPS speedtest, GitHub release check, config or log file handling, global hotkey registration, taskbar integration, tray icon)
 
 ## What to expect
 
@@ -43,6 +43,6 @@ Reports are in scope when they show behavior beyond the app's intended actions,
 such as:
 
 - Unsafe path handling when resolving bundled resources or the config and log files
-- Unexpected outbound connections beyond the app's latency probes and speedtest traffic
+- Unexpected outbound connections beyond the app's latency probes, speedtest traffic and GitHub release checks
 
-The widget opens no network listeners. It makes outbound HTTPS speedtest requests and TCP/ICMP latency probes, and integrates with Explorer through Windows APIs. Reports may involve local input or remote measurement responses.
+The widget opens no network listeners. It makes outbound HTTPS speedtest and GitHub release requests and TCP/ICMP latency probes, and integrates with Explorer through Windows APIs. Reports may involve local input or remote measurement responses.
