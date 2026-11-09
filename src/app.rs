@@ -1132,7 +1132,8 @@ fn finish_update_check(outcome: Result<UpdateCheck, String>) {
 /// Shows the result of a manual update check without holding `STATE`.
 fn show_update_dialog(result: Result<Option<UpdateInfo>, String>) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_YESNO,
+        MessageBoxW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+        MB_YESNO,
     };
     let owner = state_controller();
     let title = to_wide("NetSpeed Widget");
@@ -1150,7 +1151,7 @@ fn show_update_dialog(result: Result<Option<UpdateInfo>, String>) {
                     owner,
                     PCWSTR(text.as_ptr()),
                     PCWSTR(title.as_ptr()),
-                    MB_YESNO | MB_ICONINFORMATION,
+                    MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
                 )
             };
             if choice == IDYES {
@@ -1168,7 +1169,7 @@ fn show_update_dialog(result: Result<Option<UpdateInfo>, String>) {
                     owner,
                     PCWSTR(text.as_ptr()),
                     PCWSTR(title.as_ptr()),
-                    MB_OK | MB_ICONINFORMATION,
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
                 );
             }
         }
@@ -1180,7 +1181,7 @@ fn show_update_dialog(result: Result<Option<UpdateInfo>, String>) {
                     owner,
                     PCWSTR(text.as_ptr()),
                     PCWSTR(title.as_ptr()),
-                    MB_OK | MB_ICONERROR,
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
                 );
             }
         }
@@ -1195,12 +1196,14 @@ fn open_release_page(url: &str) {
         let title = to_wide("NetSpeed Widget");
         // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+            };
             MessageBoxW(
                 state_controller(),
                 PCWSTR(text.as_ptr()),
                 PCWSTR(title.as_ptr()),
-                MB_OK | MB_ICONERROR,
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
             );
         }
     }
