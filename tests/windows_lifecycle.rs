@@ -214,11 +214,10 @@ fn assert_menu_organization(popup: HWND) {
     assert!(
         pref_labels[3].starts_with("Check for updates…")
             || pref_labels[3].starts_with("Checking for updates…")
-            || pref_labels[3].starts_with("Open release page")
     );
     assert!(matches!(
         unsafe { GetMenuItemID(preferences, 3) },
-        CMD_CHECK_UPDATES | CMD_OPEN_UPDATE_URL | 0
+        CMD_CHECK_UPDATES | 0
     ));
     fn assert_max_depth(menu: HMENU, depth: usize) {
         assert!(depth <= 2, "more than two submenu levels");

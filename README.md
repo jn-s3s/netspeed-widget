@@ -207,6 +207,10 @@ Active tests request 25 MB down and upload a 256 KiB calibration payload, then
 up to 8 MiB more. Automatic tests consume data. Results estimate throughput to
 that service, not guaranteed line capacity.
 
+Release checks query `api.github.com` 30 seconds after launch and every 12 hours
+after a completed check (retrying after 60 minutes on failure), or manually via
+**Preferences → Check for updates…**. Draft and pre-release entries are ignored.
+
 ## Build and verify
 
 ```powershell

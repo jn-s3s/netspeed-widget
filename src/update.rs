@@ -7,6 +7,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::io::Read;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -25,11 +26,14 @@ pub const LATEST_RELEASE_API_URL: &str =
 /// Fallback web page for the repository's releases.
 pub const RELEASES_PAGE_URL: &str = "https://github.com/jn-s3s/netspeed-widget/releases";
 
-/// Trusted URL prefix for opening a release page in the browser.
-const ALLOWED_URL_PREFIX: &str = "https://github.com/jn-s3s/netspeed-widget/releases";
+/// Trusted URL prefix for opening a specific release tag page in the browser.
+const ALLOWED_TAG_URL_PREFIX: &str = "https://github.com/jn-s3s/netspeed-widget/releases/tag/";
+
+/// Maximum bytes read from a GitHub release response body.
+const MAX_RELEASE_BODY_BYTES: usize = 256 * 1024;
 
 /// Parsed semantic version (`major.minor.patch` with optional pre-release).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 pub struct SemVer {
     pub major: u64,
     pub minor: u64,
@@ -49,7 +53,7 @@ impl SemVer {
         let without_build = stripped.split('+').next()?;
         let (core, pre) = match without_build.split_once('-') {
             Some((core, pre)) => {
-                if pre.is_empty() {
+                if !is_valid_prerelease(pre) {
                     return None;
                 }
                 (core, Some(pre.to_string()))
@@ -72,12 +76,40 @@ impl SemVer {
     }
 }
 
+fn is_valid_prerelease(pre: &str) -> bool {
+    if pre.is_empty() {
+        return false;
+    }
+    for segment in pre.split('.') {
+        if segment.is_empty()
+            || !segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return false;
+        }
+        if segment.bytes().all(|b| b.is_ascii_digit())
+            && segment.len() > 1
+            && segment.starts_with('0')
+        {
+            return false;
+        }
+    }
+    true
+}
+
 impl fmt::Display for SemVer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.pre {
             Some(pre) => write!(f, "{}.{}.{}-{pre}", self.major, self.minor, self.patch),
             None => write!(f, "{}.{}.{}", self.major, self.minor, self.patch),
         }
+    }
+}
+
+impl PartialEq for SemVer {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
     }
 }
 
@@ -176,9 +208,15 @@ pub fn check_for_update() -> Result<UpdateCheck, String> {
         .set("User-Agent", &user_agent)
         .call()
         .map_err(|err| format!("release query failed: {err}"))?;
-    let body = response
-        .into_string()
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take((MAX_RELEASE_BODY_BYTES + 1) as u64)
+        .read_to_string(&mut body)
         .map_err(|err| format!("could not read release response: {err}"))?;
+    if body.len() > MAX_RELEASE_BODY_BYTES {
+        return Err("release response exceeded size limit".to_string());
+    }
     evaluate_release_json(current, &body)
 }
 
@@ -201,6 +239,9 @@ pub fn evaluate_release_json(current_version: &str, json: &str) -> Result<Update
     }
     let latest = SemVer::parse(&release.tag_name)
         .ok_or_else(|| format!("invalid release tag '{}'", release.tag_name))?;
+    if latest.pre.is_some() {
+        return Ok(UpdateCheck::UpToDate);
+    }
     if latest > current {
         let url = sanitize_release_url(&release.html_url);
         Ok(UpdateCheck::Available(UpdateInfo {
@@ -215,15 +256,22 @@ pub fn evaluate_release_json(current_version: &str, json: &str) -> Result<Update
 /// Ensures the release URL points to the repository's HTTPS GitHub releases page.
 pub fn sanitize_release_url(candidate: &str) -> String {
     let trimmed = candidate.trim();
-    if trimmed.starts_with(ALLOWED_URL_PREFIX)
-        && !trimmed
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace())
-    {
-        trimmed.to_string()
-    } else {
-        RELEASES_PAGE_URL.to_string()
+    if trimmed == RELEASES_PAGE_URL {
+        return trimmed.to_string();
     }
+    if let Some(tag) = trimmed.strip_prefix(ALLOWED_TAG_URL_PREFIX) {
+        if !tag.is_empty()
+            && tag != "."
+            && tag != ".."
+            && !tag.contains("..")
+            && tag
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'))
+        {
+            return trimmed.to_string();
+        }
+    }
+    RELEASES_PAGE_URL.to_string()
 }
 
 /// Opens a validated release URL in the user's default browser.
@@ -281,6 +329,9 @@ mod tests {
         assert!(SemVer::parse("v2.1").is_none());
         assert!(SemVer::parse("v2.1.0.1").is_none());
         assert!(SemVer::parse("v2.1.0-").is_none());
+        assert!(SemVer::parse("v2.1.0-rc..1").is_none());
+        assert!(SemVer::parse("v2.1.0-01").is_none());
+        assert!(SemVer::parse("v2.1.0-rc.1\nhttps://evil").is_none());
         assert!(SemVer::parse("latest").is_none());
     }
 
@@ -329,6 +380,17 @@ mod tests {
             evaluate_release_json("2.1.0", prerelease_json).unwrap(),
             UpdateCheck::UpToDate
         );
+
+        let unflagged_prerelease_json = r#"{
+            "tag_name": "v9.0.0-rc.1",
+            "html_url": "https://github.com/jn-s3s/netspeed-widget/releases/tag/v9.0.0-rc.1",
+            "draft": false,
+            "prerelease": false
+        }"#;
+        assert_eq!(
+            evaluate_release_json("2.1.0", unflagged_prerelease_json).unwrap(),
+            UpdateCheck::UpToDate
+        );
     }
 
     #[test]
@@ -356,5 +418,22 @@ mod tests {
             ),
             RELEASES_PAGE_URL
         );
+        assert_eq!(
+            sanitize_release_url(
+                "https://github.com/jn-s3s/netspeed-widget/releases/../../../evil/repo"
+            ),
+            RELEASES_PAGE_URL
+        );
+        assert_eq!(
+            sanitize_release_url("https://github.com/jn-s3s/netspeed-widget/releases-evil"),
+            RELEASES_PAGE_URL
+        );
+        assert_eq!(
+            sanitize_release_url(
+                "https://github.com/jn-s3s/netspeed-widget/releases/download/v2.2.0/payload.exe"
+            ),
+            RELEASES_PAGE_URL
+        );
+        assert_eq!(sanitize_release_url(RELEASES_PAGE_URL), RELEASES_PAGE_URL);
     }
 }

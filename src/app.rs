@@ -135,6 +135,7 @@ struct AppState {
     speedtest_next_due: f64,
     speedtest_summary: String,
     update_check_running: bool,
+    update_check_manual: bool,
     update_check_next_due: f64,
     available_update: Option<UpdateInfo>,
     graph: TrafficGraph,
@@ -363,6 +364,7 @@ pub fn run() -> Result<(), String> {
             })
             .unwrap_or_default(),
         update_check_running: false,
+        update_check_manual: false,
         update_check_next_due: now_epoch() + UPDATE_CHECK_STARTUP_GRACE_SEC,
         available_update: None,
         graph: TrafficGraph::new(),
@@ -849,7 +851,7 @@ fn update_tray_tooltip(state: &mut AppState) {
     let ping = ping_text(state);
     let version_line = match &state.available_update {
         Some(info) => format!(
-            "NetSpeed Widget v{} (v{} available)",
+            "NetSpeed Widget v{} → v{}",
             env!("CARGO_PKG_VERSION"),
             info.version
         ),
@@ -1037,15 +1039,9 @@ fn finish_speedtest(result: Option<SpeedtestResult>) {
     render(state);
 }
 
-/// Completed update-check payload waiting to be consumed by the UI thread.
-struct PendingUpdateCheck {
-    manual: bool,
-    outcome: Result<UpdateCheck, String>,
-}
-
 /// Shared slot for a worker's update-check result, read on completion notification.
-fn pending_update_check() -> &'static Mutex<Option<PendingUpdateCheck>> {
-    static RESULT: OnceLock<Mutex<Option<PendingUpdateCheck>>> = OnceLock::new();
+fn pending_update_check() -> &'static Mutex<Option<Result<UpdateCheck, String>>> {
+    static RESULT: OnceLock<Mutex<Option<Result<UpdateCheck, String>>>> = OnceLock::new();
     RESULT.get_or_init(|| Mutex::new(None))
 }
 
@@ -1056,6 +1052,7 @@ fn start_update_check(manual: bool) {
         let Some(state) = guard.as_mut() else {
             return;
         };
+        state.update_check_manual |= manual;
         if state.update_check_running {
             return;
         };
@@ -1069,8 +1066,9 @@ fn start_update_check(manual: bool) {
             let outcome = update::check_for_update();
             *pending_update_check()
                 .lock()
-                .unwrap_or_else(|err| err.into_inner()) =
-                Some(PendingUpdateCheck { manual, outcome });
+                .unwrap_or_else(|err| err.into_inner()) = Some(outcome);
+            // SAFETY: `handle` is the controller window created on the UI thread,
+            // and `PostMessageW` safely queues a message across threads.
             unsafe {
                 let _ = PostMessageW(
                     HWND(handle as *mut c_void),
@@ -1085,19 +1083,21 @@ fn start_update_check(manual: bool) {
         let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
         if let Some(state) = guard.as_mut() {
             state.update_check_running = false;
+            state.update_check_manual = false;
             state.update_check_next_due = now_epoch() + UPDATE_CHECK_RETRY_SEC;
         }
     }
 }
 
 /// Applies the result of a finished GitHub release version check.
-fn finish_update_check(manual: bool, outcome: Result<UpdateCheck, String>) {
+fn finish_update_check(outcome: Result<UpdateCheck, String>) {
     let dialog_action = {
         let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
         let Some(state) = guard.as_mut() else {
             return;
         };
         state.update_check_running = false;
+        let manual = std::mem::take(&mut state.update_check_manual);
         let action = match outcome {
             Ok(UpdateCheck::Available(info)) => {
                 logger::info(
@@ -1280,8 +1280,8 @@ unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .take();
-            if let Some(pending) = result {
-                finish_update_check(pending.manual, pending.outcome);
+            if let Some(outcome) = result {
+                finish_update_check(outcome);
             }
             LRESULT(0)
         }
@@ -2293,11 +2293,6 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
     let update_entry = if state.update_check_running {
         MenuEntry::Disabled {
             label: "Checking for updates…".to_string(),
-        }
-    } else if let Some(info) = &state.available_update {
-        MenuEntry::Command {
-            id: CMD_OPEN_UPDATE_URL,
-            label: format!("Open release page (v{} available)…", info.version),
         }
     } else {
         MenuEntry::Command {
