@@ -8,7 +8,7 @@
 use crate::clock::now_epoch;
 use netspeed_widget::commands::*;
 use std::ffi::c_void;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
@@ -41,11 +41,13 @@ use crate::graph::TrafficGraph;
 use crate::hotkey;
 use crate::latency::{DisplayState, LatencyProbe, LatencyResult, LATENCY_GOOD_MS};
 use crate::logger;
-use crate::paint::{self, Fonts, WidgetView};
+use crate::paint::{self, Fonts, ResourceMeter, WidgetView};
 use crate::sampler::{NetSample, NetSampler};
 use crate::schedule::next_speedtest_due;
 use crate::speedtest::{self, SpeedtestResult};
+use crate::system::{SystemSampler, SystemSnapshot};
 use crate::theme::{self, Health, Palette};
+use crate::update::{self, UpdateCheck, UpdateInfo};
 use crate::win::dialog;
 use crate::win::gdi::{blit_layered, to_wide};
 use crate::win::menu::{self, MenuEntry};
@@ -60,6 +62,8 @@ use crate::win::{appearance::Appearance, details, tooltip::Tooltip};
 
 /// Notifies the UI thread that the speedtest result slot is ready to read.
 const WM_APP_SPEEDTEST: u32 = WM_APP + 1;
+/// Notifies the UI thread that the version check result slot is ready to read.
+const WM_APP_UPDATE_CHECK: u32 = WM_APP + 4;
 
 /// Timer that refreshes the widget.
 const TIMER_TICK: usize = 1;
@@ -82,6 +86,12 @@ const SPEEDTEST_INTERVAL_SEC: f64 = 4.0 * 60.0 * 60.0;
 const SPEEDTEST_STARTUP_GRACE_SEC: f64 = 20.0;
 /// Delay before retrying a failed speedtest or a passive estimate.
 const SPEEDTEST_RETRY_SEC: f64 = 15.0 * 60.0;
+/// Seconds between automatic GitHub release checks.
+const UPDATE_CHECK_INTERVAL_SEC: f64 = 12.0 * 60.0 * 60.0;
+/// Delay before the first automatic GitHub release check after startup.
+const UPDATE_CHECK_STARTUP_GRACE_SEC: f64 = 30.0;
+/// Delay before retrying a failed automatic GitHub release check.
+const UPDATE_CHECK_RETRY_SEC: f64 = 60.0 * 60.0;
 /// Identifier of the global hotkey registration.
 const HOTKEY_ID: i32 = 1;
 
@@ -124,6 +134,10 @@ struct AppState {
     speedtest_running: bool,
     speedtest_next_due: f64,
     speedtest_summary: String,
+    update_check_running: bool,
+    update_check_manual: bool,
+    update_check_next_due: f64,
+    available_update: Option<UpdateInfo>,
     graph: TrafficGraph,
     fonts: Option<Fonts>,
     width: i32,
@@ -141,6 +155,13 @@ struct AppState {
     occupancy: OccupancyProbe,
     placement_settler: PlacementSettler,
     show_graph: bool,
+    show_resources: bool,
+    show_cpu: bool,
+    show_memory: bool,
+    show_disk_activity: bool,
+    show_disk_storage: bool,
+    system_sampler: SystemSampler,
+    latest_system: Option<Arc<SystemSnapshot>>,
     hotkey_combo: String,
     hotkey_ok: bool,
     hotkey_id: i32,
@@ -162,6 +183,61 @@ struct AppState {
 // Only the UI thread accesses this slot. Workers use their own snapshots or
 // post a completion message; they never use these handles or GDI resources.
 unsafe impl Send for AppState {}
+
+fn enabled_resource_count(show_resources: bool, flags: [bool; 4]) -> usize {
+    if show_resources {
+        flags.into_iter().filter(|&enabled| enabled).count()
+    } else {
+        0
+    }
+}
+
+impl AppState {
+    fn active_resource_count(&self) -> usize {
+        enabled_resource_count(
+            self.show_resources,
+            [
+                self.show_cpu,
+                self.show_memory,
+                self.show_disk_activity,
+                self.show_disk_storage,
+            ],
+        )
+    }
+
+    fn resource_meters(&self) -> Vec<ResourceMeter> {
+        if !self.show_resources {
+            return Vec::new();
+        }
+        let sys = self.latest_system.as_deref();
+        let mut meters = Vec::with_capacity(4);
+        if self.show_cpu {
+            meters.push(ResourceMeter {
+                label: 'C',
+                ratio: sys.map_or(0.0, |s| s.cpu_usage),
+            });
+        }
+        if self.show_memory {
+            meters.push(ResourceMeter {
+                label: 'M',
+                ratio: sys.map_or(0.0, |s| s.memory_usage),
+            });
+        }
+        if self.show_disk_activity {
+            meters.push(ResourceMeter {
+                label: 'D',
+                ratio: sys.map_or(0.0, |s| s.disk_activity),
+            });
+        }
+        if self.show_disk_storage {
+            meters.push(ResourceMeter {
+                label: 'S',
+                ratio: sys.map_or(0.0, |s| s.disk_storage_ratio),
+            });
+        }
+        meters
+    }
+}
 
 /// The global application state.
 static STATE: OnceLock<Mutex<Option<AppState>>> = OnceLock::new();
@@ -219,6 +295,16 @@ pub fn run() -> Result<(), String> {
     let appearance = Appearance::current();
     let palette = theme::resolved_palette(&theme_name, appearance, subtle_background);
     let show_graph = config::show_graph();
+    let show_resources = config::show_resources();
+    let show_cpu = config::show_cpu();
+    let show_memory = config::show_memory();
+    let show_disk_activity = config::show_disk_activity();
+    let show_disk_storage = config::show_disk_storage();
+    let initial_resource_count = enabled_resource_count(
+        show_resources,
+        [show_cpu, show_memory, show_disk_activity, show_disk_storage],
+    );
+    let system_sampler = SystemSampler::new(Duration::from_secs(1));
     let widget_visible = config::widget_visible();
     let placement = config::placement();
     let hotkey_combo = config::hotkey();
@@ -228,7 +314,7 @@ pub fn run() -> Result<(), String> {
     let height = 48;
     let fonts = Fonts::for_dpi(96, layout == DisplayLayout::SingleLine, height)
         .ok_or("could not create widget fonts")?;
-    let width = paint::widget_width(layout, show_graph, &fonts);
+    let width = paint::widget_width(layout, show_graph, initial_resource_count, &fonts);
     let next_due = next_speedtest_due(
         config::speedtest().as_ref(),
         now_epoch(),
@@ -277,6 +363,10 @@ pub fn run() -> Result<(), String> {
                 )
             })
             .unwrap_or_default(),
+        update_check_running: false,
+        update_check_manual: false,
+        update_check_next_due: now_epoch() + UPDATE_CHECK_STARTUP_GRACE_SEC,
+        available_update: None,
         graph: TrafficGraph::new(),
         fonts: Some(fonts),
         width,
@@ -292,6 +382,13 @@ pub fn run() -> Result<(), String> {
         occupancy: OccupancyProbe::new(controller),
         placement_settler: PlacementSettler::default(),
         show_graph,
+        show_resources,
+        show_cpu,
+        show_memory,
+        show_disk_activity,
+        show_disk_storage,
+        system_sampler,
+        latest_system: None,
         hotkey_combo,
         hotkey_ok: false,
         hotkey_id: HOTKEY_ID,
@@ -318,6 +415,9 @@ pub fn run() -> Result<(), String> {
         let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
         let state = guard.as_mut().expect("the state was just installed");
         state.sampler.start();
+        if state.show_resources {
+            state.system_sampler.start();
+        }
         state.probe.start();
         apply_hotkey(state);
     }
@@ -594,8 +694,9 @@ fn position_widget(state: &mut AppState) {
         .map(|areas| areas.to_vec());
     let gap = (8.0 * dpi as f32 / 96.0).round() as i32;
     let tray_left = taskbar::tray_left(taskbar.hwnd, rect);
+    let res_count = state.active_resource_count();
     let can_fit = |layout, margin| {
-        let width = paint::widget_width(layout, state.show_graph, fonts) + margin;
+        let width = paint::widget_width(layout, state.show_graph, res_count, fonts) + margin;
         occupied
             .as_ref()
             .and_then(|areas| {
@@ -635,7 +736,12 @@ fn position_widget(state: &mut AppState) {
         geometry_changed || state.placed_for.is_none(),
         Instant::now(),
     );
-    let width = paint::widget_width(state.effective_layout, state.show_graph, fonts);
+    let width = paint::widget_width(
+        state.effective_layout,
+        state.show_graph,
+        state.active_resource_count(),
+        fonts,
+    );
     if state.width != width || geometry_changed {
         state.width = width;
         state.height = height;
@@ -743,9 +849,17 @@ fn add_tray_icon() {
 /// Refreshes the tray tooltip with the live readout.
 fn update_tray_tooltip(state: &mut AppState) {
     let ping = ping_text(state);
+    let version_line = match &state.available_update {
+        Some(info) => format!(
+            "NetSpeed Widget v{} → v{}",
+            env!("CARGO_PKG_VERSION"),
+            info.version
+        ),
+        None => format!("NetSpeed Widget v{}", env!("CARGO_PKG_VERSION")),
+    };
     let tooltip = format!(
-        "NetSpeed Widget v{}\n{}\nD {} {} | U {} {} | {}",
-        env!("CARGO_PKG_VERSION"),
+        "{}\n{}\nD {} {} | U {} {} | {}",
+        version_line,
         speedtest_label(&state.speedtest_summary),
         state.down_text.value,
         state.down_text.unit,
@@ -925,6 +1039,176 @@ fn finish_speedtest(result: Option<SpeedtestResult>) {
     render(state);
 }
 
+/// Shared slot for a worker's update-check result, read on completion notification.
+fn pending_update_check() -> &'static Mutex<Option<Result<UpdateCheck, String>>> {
+    static RESULT: OnceLock<Mutex<Option<Result<UpdateCheck, String>>>> = OnceLock::new();
+    RESULT.get_or_init(|| Mutex::new(None))
+}
+
+/// Starts a GitHub release version check on a worker thread.
+fn start_update_check(manual: bool) {
+    let controller = {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        state.update_check_manual |= manual;
+        if state.update_check_running {
+            return;
+        };
+        state.update_check_running = true;
+        state.controller
+    };
+    let handle = controller.0 as isize;
+    let spawned = std::thread::Builder::new()
+        .name("update-check-worker".to_string())
+        .spawn(move || {
+            let outcome = update::check_for_update();
+            *pending_update_check()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Some(outcome);
+            // SAFETY: `handle` is the controller window created on the UI thread,
+            // and `PostMessageW` safely queues a message across threads.
+            unsafe {
+                let _ = PostMessageW(
+                    HWND(handle as *mut c_void),
+                    WM_APP_UPDATE_CHECK,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        });
+    if let Err(err) = spawned {
+        logger::error("update", &format!("could not start worker: {err}"));
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(state) = guard.as_mut() {
+            state.update_check_running = false;
+            state.update_check_manual = false;
+            state.update_check_next_due = now_epoch() + UPDATE_CHECK_RETRY_SEC;
+        }
+    }
+}
+
+/// Applies the result of a finished GitHub release version check.
+fn finish_update_check(outcome: Result<UpdateCheck, String>) {
+    let dialog_action = {
+        let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+        let Some(state) = guard.as_mut() else {
+            return;
+        };
+        state.update_check_running = false;
+        let manual = std::mem::take(&mut state.update_check_manual);
+        let action = match outcome {
+            Ok(UpdateCheck::Available(info)) => {
+                logger::info(
+                    "update",
+                    &format!("new version available: v{} ({})", info.version, info.url),
+                );
+                state.available_update = Some(info.clone());
+                state.update_check_next_due = now_epoch() + UPDATE_CHECK_INTERVAL_SEC;
+                manual.then_some(Ok(Some(info)))
+            }
+            Ok(UpdateCheck::UpToDate) => {
+                logger::info("update", "application is up to date");
+                state.available_update = None;
+                state.update_check_next_due = now_epoch() + UPDATE_CHECK_INTERVAL_SEC;
+                manual.then_some(Ok(None))
+            }
+            Err(err) => {
+                logger::warning("update", &err);
+                state.update_check_next_due = now_epoch() + UPDATE_CHECK_RETRY_SEC;
+                manual.then_some(Err(err))
+            }
+        };
+        update_tray_tooltip(state);
+        action
+    };
+
+    if let Some(result) = dialog_action {
+        show_update_dialog(result);
+    }
+}
+
+/// Shows the result of a manual update check without holding `STATE`.
+fn show_update_dialog(result: Result<Option<UpdateInfo>, String>) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+        MB_YESNO,
+    };
+    let owner = state_controller();
+    let title = to_wide("NetSpeed Widget");
+    match result {
+        Ok(Some(info)) => {
+            let text = to_wide(&format!(
+                "NetSpeed Widget v{} is available (you have v{}).\n\nOpen the release page in your browser?\n{}",
+                info.version,
+                env!("CARGO_PKG_VERSION"),
+                info.url
+            ));
+            // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+            let choice = unsafe {
+                MessageBoxW(
+                    owner,
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_YESNO | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
+                )
+            };
+            if choice == IDYES {
+                open_release_page(&info.url);
+            }
+        }
+        Ok(None) => {
+            let text = to_wide(&format!(
+                "NetSpeed Widget v{} is up to date.",
+                env!("CARGO_PKG_VERSION")
+            ));
+            // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+            unsafe {
+                MessageBoxW(
+                    owner,
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND | MB_TOPMOST,
+                );
+            }
+        }
+        Err(err) => {
+            let text = to_wide(&format!("Could not check for updates.\n\n{err}"));
+            // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+            unsafe {
+                MessageBoxW(
+                    owner,
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+                );
+            }
+        }
+    }
+}
+
+/// Opens a release URL in the browser and reports any shell launch failure.
+fn open_release_page(url: &str) {
+    if let Err(err) = update::open_release_url(url) {
+        logger::error("update", &format!("could not open release page: {err}"));
+        let text = to_wide(&format!("Could not open the release page.\n\n{err}"));
+        let title = to_wide("NetSpeed Widget");
+        // SAFETY: Owner is the UI-thread controller and both UTF-16 buffers outlive the call.
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+            };
+            MessageBoxW(
+                state_controller(),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+            );
+        }
+    }
+}
+
 /// The controller window procedure.
 unsafe extern "system" fn controller_proc(
     hwnd: HWND,
@@ -992,6 +1276,16 @@ unsafe fn controller_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARA
                 .unwrap_or_else(|err| err.into_inner())
                 .take();
             finish_speedtest(result);
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_CHECK => {
+            let result = pending_update_check()
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            if let Some(outcome) = result {
+                finish_update_check(outcome);
+            }
             LRESULT(0)
         }
         TRAY_CALLBACK => {
@@ -1223,7 +1517,8 @@ fn tick(timer: usize) {
         TIMER_TICK => {}
         TIMER_BACKGROUND => {
             let preferred = preferred_taskbar();
-            let (attached, due) = {
+            let now = now_epoch();
+            let (attached, due, update_due) = {
                 let guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
                 match guard.as_ref() {
                     Some(state) => (
@@ -1232,7 +1527,8 @@ fn tick(timer: usize) {
                                 taskbar::is_window(bar.hwnd)
                                     && preferred.is_some_and(|wanted| wanted.hwnd == bar.hwnd)
                             }),
-                        !state.speedtest_running && now_epoch() >= state.speedtest_next_due,
+                        !state.speedtest_running && now >= state.speedtest_next_due,
+                        !state.update_check_running && now >= state.update_check_next_due,
                     ),
                     None => return,
                 }
@@ -1242,6 +1538,9 @@ fn tick(timer: usize) {
             }
             if due {
                 start_speedtest(false);
+            }
+            if update_due {
+                start_update_check(false);
             }
             return;
         }
@@ -1268,6 +1567,7 @@ fn tick(timer: usize) {
             apply_sample(state, sample);
         }
     }
+    state.latest_system = state.system_sampler.latest();
     apply_latency(state);
     let available = state.last_sample_ts > 0.0 && now_epoch() - state.last_sample_ts <= 3.0;
     state.down_text = state
@@ -1287,14 +1587,33 @@ fn tick(timer: usize) {
     let mut tooltip = state.tooltip.take();
     let (width, height, widget) = (state.width, state.height, state.widget);
     let accessible_name = (state.tick_count % 8 == 0).then(|| {
-        to_wide(&format!(
+        let mut desc = format!(
             "NetSpeed: download {} {}, upload {} {}, probe {}",
             state.down_text.value,
             state.down_text.unit,
             state.up_text.value,
             state.up_text.unit,
             ping_text(state)
-        ))
+        );
+        if state.show_resources && state.effective_layout != DisplayLayout::SingleLine {
+            if let Some(sys) = &state.latest_system {
+                for (enabled, name, ratio) in [
+                    (state.show_cpu, "CPU", sys.cpu_usage),
+                    (state.show_memory, "RAM", sys.memory_usage),
+                    (state.show_disk_activity, "Disk I/O", sys.disk_activity),
+                    (
+                        state.show_disk_storage,
+                        "Disk space",
+                        sys.disk_storage_ratio,
+                    ),
+                ] {
+                    if enabled {
+                        desc.push_str(&format!(", {name} {}%", (ratio * 100.0).round() as u32));
+                    }
+                }
+            }
+        }
+        to_wide(&desc)
     });
     drop(guard);
     if let Some(tooltip) = tooltip.as_mut() {
@@ -1384,6 +1703,7 @@ fn render(state: &mut AppState) {
     };
     let mut canvas = Canvas::new(state.width, state.height);
     let samples = state.sampler.history();
+    let meters = state.resource_meters();
     let view = WidgetView {
         down: &state.down_text,
         up: &state.up_text,
@@ -1396,6 +1716,7 @@ fn render(state: &mut AppState) {
         layout: state.effective_layout,
         show_graph: state.show_graph,
         graph_fill: state.graph_fill && !state.appearance.high_contrast,
+        resources: &meters,
     };
     paint::paint(&mut canvas, fonts, &view, &state.palette, &mut state.graph);
     state.pending_canvas = Some(canvas);
@@ -1613,6 +1934,59 @@ fn details_snapshot(state: &AppState) -> details::Snapshot {
         crate::latency::PING_HOST,
         crate::latency::PING_PORT
     );
+    let sys_summary = state
+        .latest_system
+        .as_ref()
+        .map(|sys| {
+            let cpu = (sys.cpu_usage * 100.0).round() as u32;
+            let mem = (sys.memory_usage * 100.0).round() as u32;
+            // Windows Task Manager and Explorer display binary GiB/TiB quantities labeled as "GB" / "TB".
+            let mem_used_gb = sys.memory_used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            let mem_total_gb = sys.memory_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            let disk_io = (sys.disk_activity * 100.0).round() as u32;
+            let mut storage_parts = Vec::new();
+            for drive in &sys.drives {
+                let used_gb = drive.used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let total_gb = drive.total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                let pct = (drive.used_ratio * 100.0).round() as u32;
+                if total_gb >= 1000.0 {
+                    storage_parts.push(format!(
+                        "{}: {:.1}/{:.1} TB ({}%)",
+                        drive.letter,
+                        used_gb / 1024.0,
+                        total_gb / 1024.0,
+                        pct
+                    ));
+                } else {
+                    storage_parts.push(format!(
+                        "{}: {:.0}/{:.0} GB ({}%)",
+                        drive.letter, used_gb, total_gb, pct
+                    ));
+                }
+            }
+            let storage_line = if storage_parts.is_empty() {
+                String::new()
+            } else {
+                format!("\r\nStorage: {}", storage_parts.join(" · "))
+            };
+            format!(
+                "\r\n\r\nSystem: CPU {}% · RAM {}% ({:.1}/{:.1} GB) · Disk I/O {}%{}",
+                cpu, mem, mem_used_gb, mem_total_gb, disk_io, storage_line
+            )
+        })
+        .unwrap_or_default();
+    let update_line = state
+        .available_update
+        .as_ref()
+        .map(|info| {
+            format!(
+                "\r\n\r\nUpdate available: v{} (current v{})\r\nRelease: {}",
+                info.version,
+                env!("CARGO_PKG_VERSION"),
+                info.url
+            )
+        })
+        .unwrap_or_default();
     details::Snapshot {
         rates: format!(
             "↓ {} {}    ↑ {} {}",
@@ -1622,7 +1996,7 @@ fn details_snapshot(state: &AppState) -> details::Snapshot {
             "{sampling}{probe}\r\nTarget: {target} · TCP / ICMP fallback\r\n\r\n\
              Session: ↓ {down_total}   ↑ {up_total}\r\n\r\n{testing}{speedtest}\r\n\r\n\
              60 s peaks: ↓ {peak_down:.1} / ↑ {peak_up:.1} Mbps\r\n{legend}\r\n\
-             Graph: shared automatic scale, not utilization.\r\nActive tests transfer data."
+             Graph: shared automatic scale, not utilization.\r\nActive tests transfer data.{sys_summary}{update_line}"
         ),
         samples,
         palette: state.palette,
@@ -1703,6 +2077,12 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
     if state.widget_visible && !state.placement_available {
         entries.push(MenuEntry::Disabled {
             label: "Taskbar space unavailable—tray only".to_string(),
+        });
+    }
+    if let Some(info) = &state.available_update {
+        entries.push(MenuEntry::Command {
+            id: CMD_OPEN_UPDATE_URL,
+            label: format!("Update available: v{}…", info.version),
         });
     }
     entries.push(MenuEntry::Separator);
@@ -1800,6 +2180,53 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
         label: "Animate error indicator".to_string(),
         checked: state.animate_errors,
     });
+    appearance.push(MenuEntry::Separator);
+    let resources_available = state.layout != DisplayLayout::SingleLine
+        && state.effective_layout != DisplayLayout::SingleLine;
+    let resources_subitems_enabled = state.show_resources && resources_available;
+    appearance.push(MenuEntry::Submenu {
+        label: "Resource meters".to_string(),
+        items: vec![
+            MenuEntry::DependentCheck {
+                id: CMD_TOGGLE_RESOURCES,
+                label: if state.layout == DisplayLayout::SingleLine {
+                    "Show resource meters (requires Balanced or Compact layout)"
+                } else if state.effective_layout == DisplayLayout::SingleLine {
+                    "Show resource meters (unavailable at current taskbar size)"
+                } else {
+                    "Show resource meters"
+                }
+                .to_string(),
+                checked: state.show_resources,
+                enabled: resources_available,
+            },
+            MenuEntry::Separator,
+            MenuEntry::DependentCheck {
+                id: CMD_TOGGLE_RESOURCE_CPU,
+                label: "CPU usage".to_string(),
+                checked: state.show_cpu,
+                enabled: resources_subitems_enabled,
+            },
+            MenuEntry::DependentCheck {
+                id: CMD_TOGGLE_RESOURCE_MEM,
+                label: "Memory usage".to_string(),
+                checked: state.show_memory,
+                enabled: resources_subitems_enabled,
+            },
+            MenuEntry::DependentCheck {
+                id: CMD_TOGGLE_RESOURCE_DISK_IO,
+                label: "Disk activity (I/O)".to_string(),
+                checked: state.show_disk_activity,
+                enabled: resources_subitems_enabled,
+            },
+            MenuEntry::DependentCheck {
+                id: CMD_TOGGLE_RESOURCE_DISK_SPACE,
+                label: "Disk storage space".to_string(),
+                checked: state.show_disk_storage,
+                enabled: resources_subitems_enabled,
+            },
+        ],
+    });
 
     entries.push(MenuEntry::Submenu {
         label: "Appearance".to_string(),
@@ -1866,6 +2293,16 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
             }
         }
     };
+    let update_entry = if state.update_check_running {
+        MenuEntry::Disabled {
+            label: "Checking for updates…".to_string(),
+        }
+    } else {
+        MenuEntry::Command {
+            id: CMD_CHECK_UPDATES,
+            label: format!("Check for updates… (v{})", env!("CARGO_PKG_VERSION")),
+        }
+    };
     entries.push(MenuEntry::Submenu {
         label: "Preferences".to_string(),
         items: vec![
@@ -1874,6 +2311,8 @@ fn build_menu(state: &mut AppState) -> Vec<MenuEntry> {
                 id: CMD_CHANGE_HOTKEY,
                 label: hotkey_label(state.hotkey_ok, &state.hotkey_combo),
             },
+            MenuEntry::Separator,
+            update_entry,
         ],
     });
     entries.push(MenuEntry::Separator);
@@ -2098,6 +2537,49 @@ fn handle_command(id: u32) {
                 state.placed_for = None;
             }
         }
+        CMD_TOGGLE_RESOURCES
+        | CMD_TOGGLE_RESOURCE_CPU
+        | CMD_TOGGLE_RESOURCE_MEM
+        | CMD_TOGGLE_RESOURCE_DISK_IO
+        | CMD_TOGGLE_RESOURCE_DISK_SPACE => {
+            let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(state) = guard.as_mut() {
+                match id {
+                    CMD_TOGGLE_RESOURCES => {
+                        state.show_resources = !state.show_resources;
+                        config::set_show_resources(state.show_resources);
+                        if state.show_resources {
+                            state.system_sampler.start();
+                            state.latest_system = state.system_sampler.latest();
+                        } else {
+                            state.system_sampler.stop();
+                            state.latest_system = None;
+                        }
+                    }
+                    CMD_TOGGLE_RESOURCE_CPU => {
+                        state.show_cpu = !state.show_cpu;
+                        config::set_show_cpu(state.show_cpu);
+                    }
+                    CMD_TOGGLE_RESOURCE_MEM => {
+                        state.show_memory = !state.show_memory;
+                        config::set_show_memory(state.show_memory);
+                    }
+                    CMD_TOGGLE_RESOURCE_DISK_IO => {
+                        state.show_disk_activity = !state.show_disk_activity;
+                        config::set_show_disk_activity(state.show_disk_activity);
+                    }
+                    CMD_TOGGLE_RESOURCE_DISK_SPACE => {
+                        state.show_disk_storage = !state.show_disk_storage;
+                        config::set_show_disk_storage(state.show_disk_storage);
+                    }
+                    _ => unreachable!("resource command was matched above"),
+                }
+                state.placed_for = None;
+                state.density_settler.reset();
+                position_widget(state);
+                render(state);
+            }
+        }
         CMD_PLACEMENT_TRAY => {
             config::set_placement(Placement::Tray);
             let mut guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
@@ -2117,6 +2599,17 @@ fn handle_command(id: u32) {
         CMD_CHANGE_HOTKEY => change_hotkey(),
         CMD_TOGGLE_VISIBILITY => toggle_visibility(),
         CMD_TOGGLE_AUTOSTART => toggle_autostart(),
+        CMD_CHECK_UPDATES => start_update_check(true),
+        CMD_OPEN_UPDATE_URL => {
+            let url = {
+                let guard = state_slot().lock().unwrap_or_else(|err| err.into_inner());
+                guard
+                    .as_ref()
+                    .and_then(|state| state.available_update.as_ref().map(|info| info.url.clone()))
+            }
+            .unwrap_or_else(|| update::RELEASES_PAGE_URL.to_string());
+            open_release_page(&url);
+        }
         CMD_QUIT => {
             shutdown();
             unsafe {
@@ -2231,6 +2724,7 @@ fn shutdown() {
     details::close();
     state.tooltip = None;
     state.sampler.stop();
+    state.system_sampler.stop();
     state.probe.stop();
     unsafe {
         let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(

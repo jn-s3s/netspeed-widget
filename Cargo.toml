@@ -1,6 +1,6 @@
 [package]
 name = "netspeed-widget"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -41,6 +41,8 @@ features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
+    "Win32_System_Performance",
+    "Win32_Storage_FileSystem",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Controls",
     "Win32_UI_Accessibility",

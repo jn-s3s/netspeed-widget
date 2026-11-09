@@ -6,6 +6,15 @@ Pushing a `v*` tag runs the release workflow, which builds the app and drafts a 
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-10
+
+### Added
+
+- System resource gauges in Balanced and Compact taskbar layouts for CPU, memory, disk activity and storage space
+- Resource meter toggles under Appearance > Resource meters to control individual gauges
+- System resource and fixed-drive storage summaries in the Network details panel and tray tooltip
+- Automatic and manual update checks for GitHub releases, with update notices in menus, tooltips and Network details
+
 ## [2.1.0] - 2026-10-26
 
 ### Added
@@ -98,7 +107,8 @@ Initial release of NetSpeed Widget, a small always-on-top Windows widget that sh
 - Logger for diagnostics and troubleshooting
 - Modular code structure with separated concerns
 
-[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/jn-s3s/netspeed-widget/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.1...v2.0.0
 [1.1.1]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.0...v1.1.1
