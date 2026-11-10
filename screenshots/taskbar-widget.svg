@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="920" height="145" viewBox="0 0 920 145" role="img" aria-labelledby="title desc">
   <title id="title">NetSpeed Widget in the Windows taskbar</title>
-  <desc id="desc">The compact taskbar display shows download and upload speeds, a traffic graph and 9 millisecond latency between pinned apps and the system tray.</desc>
+  <desc id="desc">The taskbar display shows download and upload speeds, a rolling traffic graph, 9 millisecond latency, and vertical gauges for CPU, RAM, disk activity and storage space between pinned apps and the system tray.</desc>
   <defs>
     <linearGradient id="desktop" x2="0" y2="1"><stop stop-color="#243047"/><stop offset="1" stop-color="#392b3b"/></linearGradient>
     <linearGradient id="taskbar" x2="0" y2="1"><stop stop-color="#432735"/><stop offset="1" stop-color="#251e2d"/></linearGradient>
@@ -8,7 +8,7 @@
   <rect width="920" height="145" fill="url(#desktop)"/>
   <path d="M0 95h920v50H0z" fill="url(#taskbar)"/>
   <path d="M0 95h920" stroke="#a48b98" stroke-opacity=".22"/>
-  <g transform="translate(180 106)">
+  <g transform="translate(96 106)">
     <rect width="27" height="27" rx="7" fill="#1384d6"/><path d="M6 6h6v6H6zm9 0h6v6h-6zm-9 9h6v6H6zm9 0h6v6h-6z" fill="#fff"/>
     <rect x="41" width="27" height="27" rx="7" fill="#f3f4f6"/><circle cx="54.5" cy="13.5" r="8" fill="#e84b3c"/><path d="M49 15h11" stroke="#f6cd42" stroke-width="3"/>
     <rect x="82" width="27" height="27" rx="5" fill="#252c39"/><path d="m89 8 6 5.5-6 5.5m8 0h7" fill="none" stroke="#ccc" stroke-width="2"/>
@@ -16,19 +16,43 @@
     <path d="M164 6h25v16h-25z" fill="#147eb3"/><path d="m170 10-4 4 4 4m6-8 4 4-4 4" fill="none" stroke="#d5ecff" stroke-width="1.5"/>
     <rect x="205" width="27" height="27" rx="6" fill="#283449"/><circle cx="218.5" cy="13.5" r="8" fill="#eceff3"/><path d="M218.5 7v7l5 3" fill="none" stroke="#2c3c54" stroke-width="2"/>
   </g>
-  <g transform="translate(-140 0)">
   <g font-family="Segoe UI, sans-serif" font-weight="600">
-    <text x="611" y="117" fill="#54d8ef" font-size="12">↓</text>
-    <text x="652" y="117" text-anchor="end" fill="#f5f6f8" font-size="12">211</text>
-    <text x="658" y="117" fill="#d6dbe2" font-size="8">kB/s</text>
-    <text x="611" y="134" fill="#b99cff" font-size="12">↑</text>
-    <text x="652" y="134" text-anchor="end" fill="#f5f6f8" font-size="12">91.0</text>
-    <text x="658" y="134" fill="#d6dbe2" font-size="8">kB/s</text>
+    <text x="356" y="117" fill="#54d8ef" font-size="12">↓</text>
+    <text x="395" y="117" text-anchor="end" fill="#f5f6f8" font-size="12">211</text>
+    <text x="400" y="117" fill="#d6dbe2" font-size="8">kB/s</text>
+    <text x="356" y="134" fill="#b99cff" font-size="12">↑</text>
+    <text x="395" y="134" text-anchor="end" fill="#f5f6f8" font-size="12">91.0</text>
+    <text x="400" y="134" fill="#d6dbe2" font-size="8">kB/s</text>
   </g>
-  <path d="M706 132h42" stroke="#b6c1ce" stroke-opacity=".2"/>
-  <path d="M706 130 712 126 716 129 721 120 726 124 731 116 736 123 742 114 748 118" fill="none" stroke="#58d6e9" stroke-width="1.5"/>
-  <circle cx="785" cy="120" r="2.2" fill="#55d895"/>
-  <text x="793" y="124" fill="#e5ebf0" font-family="Segoe UI, sans-serif" font-size="9">9 ms</text>
+  <path d="M432 132h42" stroke="#b6c1ce" stroke-opacity=".2"/>
+  <path d="M432 130 438 126 442 129 447 120 452 124 457 116 462 123 468 114 474 118" fill="none" stroke="#58d6e9" stroke-width="1.5"/>
+  <circle cx="490" cy="120" r="2.2" fill="#55d895"/>
+  <text x="498" y="124" fill="#e5ebf0" font-family="Segoe UI, sans-serif" font-size="9" font-weight="600">9 ms</text>
+  <rect x="531" y="105" width="1" height="30" fill="#d6dbe2" fill-opacity=".22"/>
+  <g font-family="Segoe UI, sans-serif">
+    <rect x="541" y="103" width="4.5" height="34" rx="2" fill="#d6dbe2" fill-opacity=".22"/>
+    <rect x="541" y="129" width="4.5" height="8" rx="2" fill="#54d8ef"/>
+    <text x="564" y="117" text-anchor="end" fill="#f5f6f8" font-size="11" font-weight="600">24</text>
+    <text x="565" y="117" fill="#d6dbe2" font-size="8">%</text>
+    <text x="550" y="134" fill="#d6dbe2" font-size="8.5">CPU</text>
+
+    <rect x="579" y="103" width="4.5" height="34" rx="2" fill="#d6dbe2" fill-opacity=".22"/>
+    <rect x="579" y="116" width="4.5" height="21" rx="2" fill="#b99cff"/>
+    <text x="602" y="117" text-anchor="end" fill="#f5f6f8" font-size="11" font-weight="600">62</text>
+    <text x="603" y="117" fill="#d6dbe2" font-size="8">%</text>
+    <text x="588" y="134" fill="#d6dbe2" font-size="8.5">RAM</text>
+
+    <rect x="617" y="103" width="4.5" height="34" rx="2" fill="#d6dbe2" fill-opacity=".22"/>
+    <rect x="617" y="132" width="4.5" height="5" rx="2" fill="#55d895"/>
+    <text x="640" y="117" text-anchor="end" fill="#f5f6f8" font-size="11" font-weight="600">14</text>
+    <text x="641" y="117" fill="#d6dbe2" font-size="8">%</text>
+    <text x="626" y="134" fill="#d6dbe2" font-size="8.5">DSK</text>
+
+    <rect x="655" y="103" width="4.5" height="34" rx="2" fill="#d6dbe2" fill-opacity=".22"/>
+    <rect x="655" y="117" width="4.5" height="20" rx="2" fill="#a9b4c0"/>
+    <text x="678" y="117" text-anchor="end" fill="#f5f6f8" font-size="11" font-weight="600">58</text>
+    <text x="679" y="117" fill="#d6dbe2" font-size="8">%</text>
+    <text x="664" y="134" fill="#d6dbe2" font-size="8.5">SSD</text>
   </g>
   <!-- Notification icons share a centerline; the clock has its own column. -->
   <g fill="none" stroke="#e5ebf0" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
