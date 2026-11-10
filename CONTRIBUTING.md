@@ -36,10 +36,11 @@ before accepting changes to these behaviors.
 
 Check the widget at 100%, 125%, 150% and 200% display scaling, including moving it
 between monitors. Compare native-resolution captures in each layout with Default,
-Dark and Light themes, graph fill on/off, and healthy/slow/failed status. Check
-small units, arrows, one-pixel side borders, graph joins and missing-data gaps.
-Also check text in the details panel and shortcut dialog. The transparent widget
-uses grayscale masks; opaque native controls follow system font smoothing.
+Dark and Light themes, graph fill on/off, resource meters on/off, and
+healthy/slow/failed status. Check small units, arrows, resource gauge bars and
+labels, one-pixel side borders, graph joins and missing-data gaps. Also check
+text in the details panel and shortcut dialog. The transparent widget uses
+grayscale masks; opaque native controls follow system font smoothing.
 
 Run the manual paint benchmark in an optimized build:
 

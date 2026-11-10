@@ -1,9 +1,10 @@
-//! NetSpeed Widget: live network speed, latency and traffic in the Windows taskbar.
+//! NetSpeed Widget: live network speed, latency, traffic and resource meters in the Windows taskbar.
 //!
 //! The widget is a child of Explorer's taskbar. It shows download and upload
-//! rates, probe status and an optional rolling graph. Hover or click for session
-//! totals and the last measured speedtest. The tray menu stays available when
-//! the widget is hidden.
+//! rates, probe status, an optional rolling graph, and optional CPU, memory,
+//! disk activity and storage gauges. Hover or click for session totals,
+//! system resource summaries and the last measured speedtest. The tray menu
+//! stays available when the widget is hidden.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
