@@ -6,6 +6,13 @@ Pushing a `v*` tag runs the release workflow, which builds the app and drafts a 
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-10
+
+### Changed
+
+- Document system resource meters in README, CONTRIBUTING and crate docs, and update the taskbar widget preview SVG
+- Bump softprops/action-gh-release from 3.0.3 to 3.0.4 in the CI release workflow
+
 ## [2.2.0] - 2026-11-10
 
 ### Added
@@ -107,7 +114,8 @@ Initial release of NetSpeed Widget, a small always-on-top Windows widget that sh
 - Logger for diagnostics and troubleshooting
 - Modular code structure with separated concerns
 
-[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/jn-s3s/netspeed-widget/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/jn-s3s/netspeed-widget/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/jn-s3s/netspeed-widget/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/jn-s3s/netspeed-widget/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/jn-s3s/netspeed-widget/compare/v1.1.1...v2.0.0
