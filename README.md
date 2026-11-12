@@ -123,9 +123,10 @@ percentage on the top row, and its three-letter label on the bottom row.
 
 Below 75%, `CPU` uses the download cyan accent, `RAM` uses upload lavender,
 `DSK` uses healthy green, and `SSD` uses muted foreground gray. Any gauge at
-75% or above turns warning amber, and 90% or above turns alert red. During
-probe warnings or failures, resource readouts and bars share the widget's uniform
-alert color (or the system text color in high contrast). The submenu is disabled
+75% or above turns warning amber, and 90% or above turns alert red, whatever
+the network status. During probe warnings and failures only the network readouts
+take the uniform alert color (the system text color in high contrast), while
+resource meters keep their utilization colors. The submenu is disabled
 with an explanation when Single line is selected or when a short taskbar forces
 Single line, while keeping your saved selections.
 
