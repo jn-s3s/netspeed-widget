@@ -208,6 +208,11 @@ pub struct WidgetView<'a> {
     pub resources: &'a [ResourceMeter],
 }
 
+/// Paints the taskbar widget view onto `canvas`.
+///
+/// `palette` must be the resolved, unalerted widget palette: alert tinting of
+/// the network readouts is derived internally, and the graph and resource
+/// meters always render from the palette as passed.
 pub fn paint(
     canvas: &mut Canvas,
     fonts: &Fonts,
@@ -229,15 +234,14 @@ pub fn paint(
     let line = fonts.value.line_height().max(fonts.unit.line_height()) as f32;
     let single = view.layout == DisplayLayout::SingleLine;
     let alert = alert_color(view.status, palette, view.failure_intensity);
+    // Alert tint applies to network readouts only; the graph and resource
+    // meters always render from the base `palette`.
     let mut text_palette = *palette;
     if let Some(color) = alert {
         text_palette.fg = color;
         text_palette.fg_dim = color;
         text_palette.down = color;
         text_palette.up = color;
-        text_palette.good = color;
-        text_palette.warn = color;
-        text_palette.bad = color;
     }
     let top = (height - if single { line } else { line * 2.0 + 2.0 * s }) * 0.5;
     draw_rate(
@@ -311,14 +315,7 @@ pub fn paint(
 
     if !single && !view.resources.is_empty() {
         let res_x = cursor_x + fonts.status_width + 14.0 * s;
-        draw_resource_meters(
-            canvas,
-            fonts,
-            (res_x, top),
-            line,
-            view.resources,
-            &text_palette,
-        );
+        draw_resource_meters(canvas, fonts, (res_x, top), line, view.resources, palette);
     }
 }
 
@@ -820,21 +817,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resource_meters_expand_widget_and_render_all_meters() {
-        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
-        let fonts = Fonts::for_dpi(96, false, 48).unwrap();
-        let w_no_res = widget_width(DisplayLayout::Balanced, true, 0, &fonts);
-        let w_3_res = widget_width(DisplayLayout::Balanced, true, 3, &fonts);
-        let w_4_res = widget_width(DisplayLayout::Balanced, true, 4, &fonts);
-        assert!(w_3_res > w_no_res);
-        assert!(w_4_res > w_3_res);
-
-        let rate = RateText {
-            value: "100".to_string(),
-            unit: "Mbps",
-        };
-        let meters = [
+    fn sample_meters() -> [ResourceMeter; 4] {
+        [
             ResourceMeter {
                 label: 'C',
                 ratio: 0.25,
@@ -851,7 +835,25 @@ mod tests {
                 label: 'S',
                 ratio: 0.85,
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn resource_meters_expand_widget_and_render_all_meters() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        let fonts = Fonts::for_dpi(96, false, 48).unwrap();
+        let palette = crate::theme::palette_for("Default");
+        let w_no_res = widget_width(DisplayLayout::Balanced, true, 0, &fonts);
+        let w_3_res = widget_width(DisplayLayout::Balanced, true, 3, &fonts);
+        let w_4_res = widget_width(DisplayLayout::Balanced, true, 4, &fonts);
+        assert!(w_3_res > w_no_res);
+        assert!(w_4_res > w_3_res);
+
+        let rate = RateText {
+            value: "100".to_string(),
+            unit: "Mbps",
+        };
+        let meters = sample_meters();
         let mut canvas = Canvas::new(w_4_res, 48);
         let view = WidgetView {
             down: &rate,
@@ -868,7 +870,7 @@ mod tests {
             &mut canvas,
             &fonts,
             &view,
-            &crate::theme::palette_for("Default"),
+            &palette,
             &mut TrafficGraph::new(),
         );
         // Ensure pixels are drawn in the canvas
@@ -878,31 +880,6 @@ mod tests {
             .0
             .iter()
             .any(|pixel| pixel[3] > 0));
-
-        // In alert states without a graph, resource meters must also use the uniform alert hue.
-        let palette = crate::theme::palette_for("Default");
-        let expected = alert_color(DisplayState::Failed, &palette, 0.5).unwrap();
-        let w_alert = widget_width(DisplayLayout::Balanced, false, 4, &fonts);
-        let mut alert_canvas = Canvas::new(w_alert, 48);
-        let alert_view = WidgetView {
-            status: DisplayState::Failed,
-            failure_intensity: 0.5,
-            show_graph: false,
-            ..view
-        };
-        paint(
-            &mut alert_canvas,
-            &fonts,
-            &alert_view,
-            &palette,
-            &mut TrafficGraph::new(),
-        );
-        for pixel in alert_canvas.pixels().as_chunks::<4>().0 {
-            let alpha = pixel[3] as f32;
-            for (channel, color) in pixel[..3].iter().zip([expected.r, expected.g, expected.b]) {
-                assert!((*channel as f32 - color * alpha).abs() <= 2.0);
-            }
-        }
 
         // Verify healthy storage (< 0.75) does not use warning amber, and NaN ratios are sanitized
         let healthy_storage_and_nan = [
@@ -929,5 +906,100 @@ mod tests {
             &mut TrafficGraph::new(),
         );
         assert!(healthy_canvas.pixels().iter().any(|&b| b > 0));
+    }
+
+    #[test]
+    fn resource_meter_colors_remain_independent_of_alert_state() {
+        let _ui = crate::win::UI_TEST_LOCK.lock().unwrap();
+        let fonts = Fonts::for_dpi(96, false, 48).unwrap();
+        let palette = crate::theme::palette_for("Default");
+        let rate = RateText {
+            value: "100".to_string(),
+            unit: "Mbps",
+        };
+        let meters = sample_meters();
+        let layout = DisplayLayout::Balanced;
+        let show_graph = true;
+        let width = widget_width(layout, show_graph, meters.len(), &fonts);
+        let healthy_view = WidgetView {
+            down: &rate,
+            up: &rate,
+            status: DisplayState::Healthy(10.0),
+            failure_intensity: 0.0,
+            samples: &[],
+            layout,
+            show_graph,
+            graph_fill: false,
+            resources: &meters,
+        };
+        let mut healthy_canvas = Canvas::new(width, 48);
+        paint(
+            &mut healthy_canvas,
+            &fonts,
+            &healthy_view,
+            &palette,
+            &mut TrafficGraph::new(),
+        );
+        // Meters are the trailing content: every pixel after the zero-meter
+        // layout width must be identical, whatever the network readouts do.
+        // The alert color must stay an unambiguous network signal so amber or
+        // red bars cannot be mistaken for CPU or RAM errors.
+        let span = (width - widget_width(layout, show_graph, 0, &fonts)) as usize;
+        let cut = (width as usize - span) * 4;
+        assert!(
+            healthy_canvas
+                .pixels()
+                .chunks_exact(width as usize * 4)
+                .any(|row| row[cut..]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] > 0)),
+            "resource meters must render visible pixels in the compared region"
+        );
+        for (status, intensity) in [
+            (DisplayState::Slow(120.0), 0.5),
+            (DisplayState::Check, 0.5),
+            (DisplayState::Failed, 0.0),
+            (DisplayState::Failed, 1.0),
+        ] {
+            let mut alert_canvas = Canvas::new(width, 48);
+            let alert_view = WidgetView {
+                status,
+                failure_intensity: intensity,
+                ..healthy_view
+            };
+            paint(
+                &mut alert_canvas,
+                &fonts,
+                &alert_view,
+                &palette,
+                &mut TrafficGraph::new(),
+            );
+            if matches!(status, DisplayState::Failed) && intensity == 1.0 {
+                assert_ne!(
+                    alert_canvas.pixels(),
+                    healthy_canvas.pixels(),
+                    "failed state at full intensity must visibly change the widget"
+                );
+            }
+            for (row, expected) in alert_canvas
+                .pixels()
+                .chunks_exact(width as usize * 4)
+                .zip(healthy_canvas.pixels().chunks_exact(width as usize * 4))
+            {
+                for (pixel, expected_pixel) in row[cut..]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(expected[cut..].as_chunks::<4>().0)
+                {
+                    assert_eq!(
+                        pixel, expected_pixel,
+                        "resource pixel changed for {status:?} at intensity {intensity}"
+                    );
+                }
+            }
+        }
     }
 }

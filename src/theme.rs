@@ -280,7 +280,7 @@ pub fn native_panel_palette(
     value
 }
 
-/// All widget text shares one opaque alert color; graph series stay independent.
+/// Network text shares one opaque alert color; graph series and resources stay independent.
 pub fn alert_color(
     state: crate::latency::DisplayState,
     palette: &Palette,
